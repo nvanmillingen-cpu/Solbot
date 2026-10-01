@@ -233,6 +233,17 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
           <Toggle ctx={ctx} path={['safety', 'minLiquidityUsd']} label="Minimale liquiditeit (graduated tokens)">
             <Num ctx={ctx} path={['safety', 'minLiquidityUsd', 'usd']} label="Minimaal" unit="USD" />
           </Toggle>
+          <Toggle ctx={ctx} path={['safety', 'maxCreatorPct']} label="Max. bezit maker (dev)" hint="Koop niet als de maker nog meer dan dit % van de supply heeft (dump-risico).">
+            <Num ctx={ctx} path={['safety', 'maxCreatorPct', 'pct']} label="Maximaal" unit="%" />
+          </Toggle>
+          <Toggle
+            ctx={ctx}
+            path={['safety', 'maxTop10Pct']}
+            label="Max. bezit top-10 holders"
+            hint="Excl. bonding curve/pool. Vereist een eigen RPC (Helius/QuickNode, gratis tier): de publieke RPC weigert deze data, dan wordt de check overgeslagen."
+          >
+            <Num ctx={ctx} path={['safety', 'maxTop10Pct', 'pct']} label="Maximaal" unit="%" />
+          </Toggle>
           <div className="rule">
             <h3>Datafeed</h3>
             <Num ctx={ctx} path={['tracker', 'watchWindowMin']} label="Token volgen gedurende" unit="min" />

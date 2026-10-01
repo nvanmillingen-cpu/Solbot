@@ -176,6 +176,8 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
 
 **Retries**: een mislukte transactie wordt herhaald tot *Max. herhalingen*, eerst via de andere executor. Vóór elke herhaling controleert de bot de wallet, zodat een transactie die toch landde niet dubbel wordt uitgevoerd.
 
+**Realtime bewaking**: voor open posities op de bonding curve abonneert de bot zich via de RPC-websocket op het curve-account (`accountSubscribe`, gratis). Elke trade op het token wordt daardoor direct tegen de exit-regels gehouden. Daarnaast is er een poll elke seconde, en voor graduated tokens elke 3 seconden via Jupiter/DexScreener. Let op: een dump in één transactie (bijvoorbeeld de maker die alles verkoopt) kan geen enkele stop-loss voorkomen. De eerstvolgende prijs is dan al veel lager.
+
 **Sell-failsafe**: mislukt een verkoop helemaal, dan blijft de positie open met de getriggerde exit-reden. De monitor probeert het opnieuw met oplopende wachttijd (5 s tot 60 s) en elke keer +5% slippage (max. 50%), ook als de prijs intussen herstelt. In het dashboard zie je dan "verkoop mislukt (n×)".
 
 ## Veiligheid
@@ -186,6 +188,8 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
   - Mint- en freeze-authority moeten ingetrokken zijn. Gevaarlijke Token-2022-extensies (permanent delegate, transfer hook, non-transferable, pausable, transfer fee) leiden tot afkeuring.
   - **Verkoop-quote**: de bot vraagt een koop-quote en daarna een verkoop-quote voor dezelfde tokens. Mislukt de verkoop-quote, of is het round-trip-verlies groter dan het maximum, dan koopt de bot niet (honeypot- en liquiditeitscheck).
   - Minimale liquiditeit voor graduated tokens.
+  - **Max. bezit van de maker** (standaard 5%): de bot leest de huidige tokenbalans van de maker uit. Heeft die nog een grote zak, dan is het dump-risico hoog. Dit werkt ook op de publieke RPC.
+  - **Max. bezit top-10 holders** (standaard 35%, zonder bonding curve of pool): vangt snipers en bundels. **Vereist een eigen RPC** (Helius of QuickNode, gratis tier). De publieke Solana-RPC en andere gratis publieke endpoints weigeren `getTokenLargestAccounts`. Zonder eigen RPC wordt deze check overgeslagen en staat er een waarschuwing in de log.
 - Afgekeurde tokens krijgen een cooldown. Bij authority-problemen worden ze permanent overgeslagen.
 - Het dashboard luistert standaard alleen op `127.0.0.1` en heeft **geen login**. Stel `HOST` niet open naar internet.
 - Alles wordt gelogd naar `logs/` (debugniveau in het bestand).

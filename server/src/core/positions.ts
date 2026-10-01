@@ -2,7 +2,7 @@ import type { Connection } from '@solana/web3.js';
 import type { Db } from '../db.js';
 import type { Executor, Fill } from '../executor/types.js';
 import { logger } from '../logger.js';
-import { curvePriceSol, fetchCurves } from '../market/bondingCurve.js';
+import { bondingCurvePda, curvePriceSol, decodeCurve, fetchCurves } from '../market/bondingCurve.js';
 import { fetchDexInfo } from '../market/dexscreener.js';
 import { jupPricesUsd } from '../market/jupiter.js';
 import { solUsd } from '../market/solPrice.js';
@@ -58,6 +58,9 @@ export class PositionManager {
   private selling = new Set<number>();
   private timer?: NodeJS.Timeout;
   private busy = false;
+  /** mint → websocket-subscriptie op de bonding curve (realtime prijs). */
+  private subs = new Map<string, number>();
+  private lastExternalFetch = 0;
 
   constructor(
     private db: Db,
@@ -77,10 +80,73 @@ export class PositionManager {
   start() {
     this.stop();
     this.timer = setInterval(() => void this.tick(), this.settings().tracker.positionPollSec * 1000);
+    this.syncSubscriptions();
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer);
+    for (const id of this.subs.values()) void this.conn.removeAccountChangeListener(id).catch(() => undefined);
+    this.subs.clear();
+  }
+
+  /**
+   * Abonneert op de bonding curve van elke open positie (RPC-websocket, gratis).
+   * Elke curve-wijziging wordt direct tegen de exit-regels gehouden, i.p.v. pas bij de volgende poll.
+   */
+  private syncSubscriptions() {
+    const wanted = new Set(this.open().map((r) => r.mint).filter((m) => !this.tracker.tokens.get(m)?.graduated));
+    for (const [mint, id] of this.subs) {
+      if (!wanted.has(mint)) {
+        void this.conn.removeAccountChangeListener(id).catch(() => undefined);
+        this.subs.delete(mint);
+      }
+    }
+    for (const mint of wanted) {
+      if (this.subs.has(mint)) continue;
+      try {
+        const id = this.conn.onAccountChange(
+          bondingCurvePda(mint),
+          (info) => {
+            const c = decodeCurve(info.data);
+            if (!c) return;
+            const t = this.tracker.tokens.get(mint);
+            if (t) {
+              t.curve = c;
+              t.curveUpdatedAt = Date.now();
+              if (c.complete) t.graduated = true;
+            }
+            if (c.complete) return;
+            const price = curvePriceSol(c);
+            if (t) addPrice(t, { t: Date.now(), priceSol: price });
+            for (const r of this.open()) if (r.mint === mint && r.status === 'open') this.handlePrice(r, price, Date.now());
+          },
+          { commitment: 'processed' },
+        );
+        this.subs.set(mint, id);
+      } catch (e) {
+        logger.debug({ mint, err: String(e) }, 'curve-subscriptie mislukt');
+      }
+    }
+  }
+
+  /** Verwerkt een nieuwe prijs voor een positie: piek bijwerken en exit-regels toetsen. */
+  private handlePrice(r: PositionRow, price: number | null, now: number) {
+    if (this.selling.has(r.id)) return;
+    if (price !== null) {
+      const peak = Math.max(r.peak_price_sol, price);
+      this.db.prepare('UPDATE positions SET last_price_sol = ?, last_price_at = ?, peak_price_sol = ? WHERE id = ?').run(price, now, peak, r.id);
+      r.peak_price_sol = peak;
+    }
+    // Eerder getriggerde exit die mislukte: opnieuw proberen (failsafe)
+    if (r.pending_exit) {
+      if (!r.next_sell_at || now >= r.next_sell_at) void this.sell(r.id, r.pending_exit);
+      return;
+    }
+    const reason = evaluateExit({ entryPriceSol: r.entry_price_sol, peakPriceSol: r.peak_price_sol, openedAt: r.opened_at }, price, now, this.settings().exits);
+    if (reason) {
+      logger.info({ id: r.id, symbol: r.symbol, reason, price, entry: r.entry_price_sol }, 'exit-regel geraakt');
+      void this.sell(r.id, reason);
+    }
   }
 
   open(): PositionRow[] {
@@ -123,6 +189,7 @@ export class PositionManager {
         p.graduated ? 1 : 0,
       );
     this.tracker.pinned.add(p.mint);
+    this.syncSubscriptions();
     return this.get(Number(res.lastInsertRowid))!;
   }
 
@@ -146,7 +213,9 @@ export class PositionManager {
       logger.debug({ err: String(e) }, 'curve-prijzen positie mislukt');
     }
     const rest = mints.filter((m) => !prices.has(m));
-    if (rest.length) {
+    // Jupiter/DexScreener zijn gelimiteerd: max. elke 3 s
+    if (rest.length && Date.now() - this.lastExternalFetch >= 3000) {
+      this.lastExternalFetch = Date.now();
       try {
         const [usd, sol] = await Promise.all([jupPricesUsd(rest), solUsd()]);
         for (const [mint, p] of usd) if (sol > 0) prices.set(mint, p / sol);
@@ -172,29 +241,14 @@ export class PositionManager {
     this.busy = true;
     try {
       const rows = this.open().filter((r) => r.status === 'open');
-      if (!rows.length) return;
+      if (!rows.length) {
+        if (this.subs.size) this.syncSubscriptions();
+        return;
+      }
       const prices = await this.fetchPrices(rows);
       const now = Date.now();
-      const exits = this.settings().exits;
-      for (const r of rows) {
-        if (this.selling.has(r.id)) continue;
-        const price = prices.get(r.mint) ?? null;
-        if (price !== null) {
-          const peak = Math.max(r.peak_price_sol, price);
-          this.db.prepare('UPDATE positions SET last_price_sol = ?, last_price_at = ?, peak_price_sol = ? WHERE id = ?').run(price, now, peak, r.id);
-          r.peak_price_sol = peak;
-        }
-        // Eerder getriggerde exit die mislukte: opnieuw proberen (failsafe)
-        if (r.pending_exit) {
-          if (!r.next_sell_at || now >= r.next_sell_at) void this.sell(r.id, r.pending_exit);
-          continue;
-        }
-        const reason = evaluateExit({ entryPriceSol: r.entry_price_sol, peakPriceSol: r.peak_price_sol, openedAt: r.opened_at }, price, now, exits);
-        if (reason) {
-          logger.info({ id: r.id, symbol: r.symbol, reason, price, entry: r.entry_price_sol }, 'exit-regel geraakt');
-          void this.sell(r.id, reason);
-        }
-      }
+      for (const r of rows) this.handlePrice(r, prices.get(r.mint) ?? null, now);
+      this.syncSubscriptions();
     } catch (e) {
       logger.warn({ err: String(e) }, 'positiemonitor fout');
     } finally {

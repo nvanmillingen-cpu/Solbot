@@ -57,6 +57,10 @@ export const settingsSchema = z.object({
       /** Mint- en freeze-authority moeten ingetrokken zijn. */
       requireRevokedAuthorities: z.boolean().default(true),
       minLiquidityUsd: toggle({ usd: pos.default(5000) }, true).prefault({}),
+      /** Max. % van de supply dat de maker (dev) nog bezit: beschermt tegen een dev-dump. */
+      maxCreatorPct: toggle({ pct: pos.max(100).default(5) }, true).prefault({}),
+      /** Max. % van de supply in de 10 grootste wallets (excl. bonding curve/pool). Vereist een RPC die getTokenLargestAccounts toestaat. */
+      maxTop10Pct: toggle({ pct: pos.max(100).default(35) }, true).prefault({}),
     })
     .prefault({}),
   tracker: z
@@ -68,7 +72,7 @@ export const settingsSchema = z.object({
       /** Pollinterval voor DexScreener (seconden). */
       dexPollSec: z.number().min(5).max(600).default(20),
       /** Pollinterval voor prijzen van open posities (seconden). */
-      positionPollSec: z.number().min(1).max(60).default(3),
+      positionPollSec: z.number().min(1).max(60).default(1),
       maxTrackedTokens: z.number().int().min(10).max(5000).default(800),
     })
     .prefault({}),

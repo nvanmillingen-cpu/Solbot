@@ -177,7 +177,7 @@ export class Bot {
       },
       'kandidaat voldoet aan filters, veiligheidscheck',
     );
-    const safety = await preBuyChecks(this.conn, s, m, s.risk.solPerTrade, tracked?.curve);
+    const safety = await preBuyChecks(this.conn, s, m, s.risk.solPerTrade, tracked?.curve, tracked?.creator);
     if (!safety.ok) {
       this.cooldown.set(m.mint, safety.permanent ? Infinity : Date.now() + 5 * 60_000);
       logger.info({ symbol: m.symbol, redenen: safety.reasons }, 'veiligheidscheck afgekeurd');
@@ -196,7 +196,7 @@ export class Bot {
       });
       const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated });
       logger.info(
-        { id: pos.id, symbol: m.symbol, mode, sol: +fill.solAmount.toFixed(5), via: fill.executor, sig: fill.signature, rtLossPct: safety.roundTripLossPct?.toFixed(1) },
+        { id: pos.id, symbol: m.symbol, mode, sol: +fill.solAmount.toFixed(5), via: fill.executor, sig: fill.signature, rtLossPct: safety.roundTripLossPct?.toFixed(1), devPct: safety.creatorPct?.toFixed(1), top10Pct: safety.top10Pct === null ? 'n.v.t.' : safety.top10Pct?.toFixed(1) },
         'GEKOCHT',
       );
       if (mode === 'live') void this.refreshWallet();
