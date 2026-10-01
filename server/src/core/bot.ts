@@ -147,6 +147,8 @@ export class Bot {
           c.metrics = m;
           c.filter = evaluateFilters(m, s.filters);
           if (!c.filter.pass) {
+            const h = c.filter.checks.find((x) => x.key === 'minHolders');
+            logger.info({ symbol: m.symbol, holders: h?.value, nodig: h?.required }, 'afgekeurd op holders');
             this.cooldown.set(m.mint, Date.now() + 60_000);
             continue;
           }

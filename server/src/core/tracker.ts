@@ -18,6 +18,7 @@ export class TokenTracker {
   private timers: NodeJS.Timeout[] = [];
   private curveBusy = false;
   private dexBusy = false;
+  private lastHoldersWarn = 0;
   stats = { newTokens: 0, migrations: 0, curvePolls: 0, dexPolls: 0, lastCurvePollAt: 0, lastDexPollAt: 0, errors: 0 };
 
   constructor(
@@ -188,7 +189,11 @@ export class TokenTracker {
       // Het grootste account is de bonding curve / pool zelf
       t.holdersRpc = { count: Math.max(0, nonZero - 1), capped: res.value.length >= 20, at: Date.now() };
     } catch (e) {
-      logger.debug({ mint, err: String(e) }, 'holders ophalen mislukt');
+      // Publieke RPC's blokkeren getTokenLargestAccounts vaak (429); max. 1 waarschuwing per minuut
+      if (Date.now() - this.lastHoldersWarn > 60_000) {
+        this.lastHoldersWarn = Date.now();
+        logger.warn({ err: String(e).slice(0, 150) }, 'holders niet op te halen via RPC; het holders-filter keurt dan alles af (gebruik een eigen RPC of zet het filter uit)');
+      }
     }
   }
 

@@ -152,7 +152,7 @@ In het tabblad *Kandidaten* zie je per token welke bron gebruikt is.
 ### Holders
 
 - **Met PumpPortal API-sleutel**: het aantal wallets met een positief saldo, berekend uit de trades.
-- **Zonder sleutel**: via RPC `getTokenLargestAccounts`. Dat geeft **maximaal 20 accounts**, dus de bot kan alleen "minstens N holders" vaststellen voor N ≤ 19. Een minimum van 20 of hoger haalt een token zonder sleutel nooit. Deze check gebeurt alleen voor tokens die al aan alle andere filters voldoen, om RPC-calls te sparen.
+- **Zonder sleutel**: via RPC `getTokenLargestAccounts`. **De publieke Solana-RPC blokkeert deze call meestal (fout 429)**: dan is het aantal holders onbekend en keurt het filter alles af. Daarom staat het holders-filter standaard uit. Zet het alleen aan met een eigen RPC (Helius/QuickNode) of een PumpPortal-sleutel. Ook dan geeft de RPC **maximaal 20 accounts**, dus de bot kan alleen "minstens N holders" vaststellen voor N ≤ 19. Een minimum van 20 of hoger haalt een token zonder sleutel nooit. Deze check gebeurt alleen voor tokens die al aan alle andere filters voldoen, om RPC-calls te sparen.
 
 ### Overige beperkingen
 

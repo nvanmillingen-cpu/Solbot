@@ -37,7 +37,7 @@ export const settingsSchema = z.object({
       graduated: z.enum(['any', 'yes', 'no']).default('no'),
       minAge: toggle({ minutes: pos.default(2) }, true).prefault({}),
       maxAge: toggle({ minutes: pos.default(30) }, true).prefault({}),
-      minHolders: toggle({ count: z.number().int().min(0).default(15) }, true).prefault({}),
+      minHolders: toggle({ count: z.number().int().min(0).default(15) }).prefault({}),
     })
     .prefault({}),
   exits: z
