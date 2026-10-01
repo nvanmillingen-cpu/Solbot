@@ -1,0 +1,133 @@
+import { z } from 'zod';
+import type { Db } from './db.js';
+
+const toggle = <T extends z.ZodRawShape>(shape: T, enabled = false) =>
+  z.object({ enabled: z.boolean().default(enabled), ...shape });
+
+const pos = z.number().min(0);
+
+export const settingsSchema = z.object({
+  general: z
+    .object({
+      /** Paper mode: gesimuleerde trades op live prijzen. */
+      paperMode: z.boolean().default(true),
+      /** Welke executor live transacties bouwt; de andere is fallback. */
+      executor: z.enum(['jupiter', 'pumpportal']).default('jupiter'),
+      slippagePct: z.number().min(0.1).max(99).default(15),
+      priorityFeeSol: pos.max(0.1).default(0.0005),
+      maxTxRetries: z.number().int().min(0).max(10).default(2),
+    })
+    .prefault({}),
+  risk: z
+    .object({
+      solPerTrade: z.number().positive().max(100).default(0.05),
+      maxOpenPositions: z.number().int().min(1).max(50).default(3),
+      dailyLossLimit: toggle({ sol: z.number().positive().default(0.5) }).prefault({}),
+      /** SOL die altijd in de wallet moet blijven voor fees. */
+      minSolReserve: pos.default(0.02),
+    })
+    .prefault({}),
+  filters: z
+    .object({
+      /** Minimale prijsstijging in % binnen het venster (of sinds lancering als het token jonger is). */
+      priceChange: toggle({ minPct: z.number().default(30), windowMin: z.number().positive().default(10) }, true).prefault({}),
+      volumeTotal: toggle({ minUsd: pos.default(5000) }, true).prefault({}),
+      volume10m: toggle({ minUsd: pos.default(2000) }, true).prefault({}),
+      marketCap: toggle({ minUsd: pos.default(8000), maxUsd: pos.default(60000) }, true).prefault({}),
+      graduated: z.enum(['any', 'yes', 'no']).default('no'),
+      minAge: toggle({ minutes: pos.default(2) }).prefault({}),
+      maxAge: toggle({ minutes: pos.default(30) }, true).prefault({}),
+      minHolders: toggle({ count: z.number().int().min(0).default(15) }).prefault({}),
+    })
+    .prefault({}),
+  exits: z
+    .object({
+      stopLoss: toggle({ pct: z.number().positive().max(100).default(25) }, true).prefault({}),
+      takeProfit: toggle({ pct: z.number().positive().default(60) }, true).prefault({}),
+      maxHold: toggle({ minutes: z.number().positive().default(20) }, true).prefault({}),
+      trailingStop: toggle({ pct: z.number().positive().max(100).default(20) }).prefault({}),
+    })
+    .prefault({}),
+  safety: z
+    .object({
+      /** Verkoop-quote moet slagen vóór aankoop. */
+      sellQuoteCheck: z.boolean().default(true),
+      /** Max. verlies bij direct kopen en weer verkopen (fees + slippage + impact). */
+      maxRoundTripLossPct: z.number().min(0).max(100).default(20),
+      /** Mint- en freeze-authority moeten ingetrokken zijn. */
+      requireRevokedAuthorities: z.boolean().default(true),
+      minLiquidityUsd: toggle({ usd: pos.default(5000) }, true).prefault({}),
+    })
+    .prefault({}),
+  tracker: z
+    .object({
+      /** Hoe lang een nieuw token gevolgd wordt (minuten). */
+      watchWindowMin: z.number().positive().max(24 * 60).default(30),
+      /** Pollinterval voor on-chain bonding-curve data (seconden). */
+      curvePollSec: z.number().min(1).max(120).default(5),
+      /** Pollinterval voor DexScreener (seconden). */
+      dexPollSec: z.number().min(5).max(600).default(20),
+      /** Pollinterval voor prijzen van open posities (seconden). */
+      positionPollSec: z.number().min(1).max(60).default(3),
+      maxTrackedTokens: z.number().int().min(10).max(5000).default(800),
+    })
+    .prefault({}),
+});
+
+export type Settings = z.infer<typeof settingsSchema>;
+
+export function defaultSettings(): Settings {
+  return settingsSchema.parse({});
+}
+
+/** Diep samenvoegen zodat een gedeeltelijke update de rest niet wist. */
+function deepMerge(base: unknown, patch: unknown): unknown {
+  if (patch === undefined) return base;
+  if (typeof base !== 'object' || base === null || Array.isArray(base)) return patch;
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return patch;
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) out[k] = deepMerge(out[k], v);
+  return out;
+}
+
+type Listener = (s: Settings) => void;
+
+export class SettingsStore {
+  private current: Settings;
+  private listeners: Listener[] = [];
+
+  constructor(private db: Db) {
+    const row = db.prepare('SELECT json FROM settings WHERE id = 1').get() as { json: string } | undefined;
+    let loaded: Settings;
+    try {
+      loaded = settingsSchema.parse(row ? JSON.parse(row.json) : {});
+    } catch {
+      loaded = defaultSettings();
+    }
+    this.current = loaded;
+    this.persist();
+  }
+
+  get(): Settings {
+    return this.current;
+  }
+
+  /** Valideert en slaat op; gooit een ZodError bij ongeldige waarden. */
+  update(patch: unknown): Settings {
+    const next = settingsSchema.parse(deepMerge(this.current, patch));
+    this.current = next;
+    this.persist();
+    for (const l of this.listeners) l(next);
+    return next;
+  }
+
+  onChange(l: Listener): void {
+    this.listeners.push(l);
+  }
+
+  private persist() {
+    this.db
+      .prepare('INSERT INTO settings (id, json, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at')
+      .run(JSON.stringify(this.current), Date.now());
+  }
+}
