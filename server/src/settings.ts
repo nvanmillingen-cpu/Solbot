@@ -22,7 +22,7 @@ export const settingsSchema = z.object({
     .object({
       solPerTrade: z.number().positive().max(100).default(0.05),
       maxOpenPositions: z.number().int().min(1).max(50).default(3),
-      dailyLossLimit: toggle({ sol: z.number().positive().default(0.5) }).prefault({}),
+      dailyLossLimit: toggle({ sol: z.number().positive().default(0.3) }, true).prefault({}),
       /** SOL die altijd in de wallet moet blijven voor fees. */
       minSolReserve: pos.default(0.02),
     })
@@ -30,22 +30,22 @@ export const settingsSchema = z.object({
   filters: z
     .object({
       /** Minimale prijsstijging in % binnen het venster (of sinds lancering als het token jonger is). */
-      priceChange: toggle({ minPct: z.number().default(30), windowMin: z.number().positive().default(10) }, true).prefault({}),
-      volumeTotal: toggle({ minUsd: pos.default(5000) }, true).prefault({}),
-      volume10m: toggle({ minUsd: pos.default(2000) }, true).prefault({}),
-      marketCap: toggle({ minUsd: pos.default(8000), maxUsd: pos.default(60000) }, true).prefault({}),
+      priceChange: toggle({ minPct: z.number().default(25), windowMin: z.number().positive().default(10) }, true).prefault({}),
+      volumeTotal: toggle({ minUsd: pos.default(8000) }, true).prefault({}),
+      volume10m: toggle({ minUsd: pos.default(4000) }, true).prefault({}),
+      marketCap: toggle({ minUsd: pos.default(10000), maxUsd: pos.default(60000) }, true).prefault({}),
       graduated: z.enum(['any', 'yes', 'no']).default('no'),
-      minAge: toggle({ minutes: pos.default(2) }).prefault({}),
+      minAge: toggle({ minutes: pos.default(2) }, true).prefault({}),
       maxAge: toggle({ minutes: pos.default(30) }, true).prefault({}),
-      minHolders: toggle({ count: z.number().int().min(0).default(15) }).prefault({}),
+      minHolders: toggle({ count: z.number().int().min(0).default(15) }, true).prefault({}),
     })
     .prefault({}),
   exits: z
     .object({
-      stopLoss: toggle({ pct: z.number().positive().max(100).default(25) }, true).prefault({}),
-      takeProfit: toggle({ pct: z.number().positive().default(60) }, true).prefault({}),
-      maxHold: toggle({ minutes: z.number().positive().default(20) }, true).prefault({}),
-      trailingStop: toggle({ pct: z.number().positive().max(100).default(20) }).prefault({}),
+      stopLoss: toggle({ pct: z.number().positive().max(100).default(20) }, true).prefault({}),
+      takeProfit: toggle({ pct: z.number().positive().default(50) }, true).prefault({}),
+      maxHold: toggle({ minutes: z.number().positive().default(15) }, true).prefault({}),
+      trailingStop: toggle({ pct: z.number().positive().max(100).default(15) }, true).prefault({}),
     })
     .prefault({}),
   safety: z
@@ -53,7 +53,7 @@ export const settingsSchema = z.object({
       /** Verkoop-quote moet slagen vóór aankoop. */
       sellQuoteCheck: z.boolean().default(true),
       /** Max. verlies bij direct kopen en weer verkopen (fees + slippage + impact). */
-      maxRoundTripLossPct: z.number().min(0).max(100).default(20),
+      maxRoundTripLossPct: z.number().min(0).max(100).default(10),
       /** Mint- en freeze-authority moeten ingetrokken zijn. */
       requireRevokedAuthorities: z.boolean().default(true),
       minLiquidityUsd: toggle({ usd: pos.default(5000) }, true).prefault({}),

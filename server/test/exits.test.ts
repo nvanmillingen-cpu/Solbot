@@ -3,7 +3,12 @@ import { evaluateExit } from '../src/core/exits.js';
 import { defaultSettings } from '../src/settings.js';
 
 const exits = () => {
-  const e = defaultSettings().exits; // SL 25, TP 60, maxHold 20 min, trailing uit
+  const e = defaultSettings().exits;
+  // Vaste waarden zodat de tests niet afhangen van de standaardinstellingen
+  e.stopLoss = { enabled: true, pct: 25 };
+  e.takeProfit = { enabled: true, pct: 60 };
+  e.maxHold = { enabled: true, minutes: 20 };
+  e.trailingStop = { enabled: false, pct: 20 };
   return e;
 };
 const now = 1_000_000_000;

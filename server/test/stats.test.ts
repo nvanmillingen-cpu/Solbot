@@ -39,7 +39,7 @@ describe('SettingsStore', () => {
     const store = new SettingsStore(db);
     expect(store.get()).toEqual(defaultSettings());
     store.update({ filters: { marketCap: { maxUsd: 99_000 } } });
-    expect(store.get().filters.marketCap).toEqual({ enabled: true, minUsd: 8000, maxUsd: 99_000 });
+    expect(store.get().filters.marketCap).toEqual({ enabled: true, minUsd: 10_000, maxUsd: 99_000 });
     expect(new SettingsStore(db).get().filters.marketCap.maxUsd).toBe(99_000);
   });
 
