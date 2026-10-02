@@ -28,7 +28,9 @@ export function evaluateExit(p: ExitInput, priceSol: number | null, now: number,
     if (exits.stopLoss.enabled && pnlPct <= -exits.stopLoss.pct) return 'SL';
     if (exits.trailingStop.enabled) {
       const peak = Math.max(p.peakPriceSol, p.entryPriceSol, priceSol);
-      if (priceSol <= peak * (1 - exits.trailingStop.pct / 100)) return 'TRAIL';
+      // Pas actief zodra de piek de activatiedrempel boven de instapprijs heeft gehaald
+      const armed = peak >= p.entryPriceSol * (1 + exits.trailingStop.activatePct / 100);
+      if (armed && priceSol <= peak * (1 - exits.trailingStop.pct / 100)) return 'TRAIL';
     }
     if (exits.takeProfit.enabled && pnlPct >= exits.takeProfit.pct) return 'TP';
   }

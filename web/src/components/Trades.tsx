@@ -60,6 +60,7 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
                 <th className="num">P&L SOL</th>
                 <th className="num">Duur</th>
                 <th>Reden</th>
+                <th className="num" title="Verkoopprijs t.o.v. de prijs waarop de exit-regel triggerde">Slippage exit</th>
                 <th>Tx</th>
               </tr>
             </thead>
@@ -78,6 +79,9 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
                   <td className="num">{r.closed_at ? fmt.dur((r.closed_at - r.opened_at) / 60_000) : '–'}</td>
                   <td>
                     <span className="pill">{REASONS[r.exit_reason ?? ''] ?? r.exit_reason}</span>
+                  </td>
+                  <td className={`num ${r.exit_trigger_price_sol && r.exit_price_sol ? signClass(r.exit_price_sol / r.exit_trigger_price_sol - 1) : ''}`}>
+                    {r.exit_trigger_price_sol && r.exit_price_sol ? fmt.pct((r.exit_price_sol / r.exit_trigger_price_sol - 1) * 100) : '–'}
                   </td>
                   <td>
                     {r.sell_sig ? (

@@ -12,6 +12,8 @@ import { PumpPortalFeed } from './feed/pumpportal.js';
 import { logFile, logger } from './logger.js';
 import { lastPrice } from './core/metrics.js';
 import { solUsd } from './market/solPrice.js';
+import { fetchCurves } from './market/bondingCurve.js';
+import { probeTop10Support } from './core/safety.js';
 import { SettingsStore } from './settings.js';
 import { loadWallet } from './wallet.js';
 
@@ -34,9 +36,12 @@ async function main() {
   const feed = new PumpPortalFeed();
   const tracker = new TokenTracker(conn, feed, () => store.get());
 
-  const paper = new PaperExecutor((mint) => {
-    const t = tracker.tokens.get(mint);
-    return { priceSol: t ? lastPrice(t)?.priceSol ?? null : null, curve: t?.curve, graduated: t?.graduated ?? false };
+  const paper = new PaperExecutor({
+    lastPrice: (mint) => {
+      const t = tracker.tokens.get(mint);
+      return t ? lastPrice(t)?.priceSol ?? null : null;
+    },
+    freshCurve: async (mint) => (await fetchCurves(conn, [mint])).get(mint),
   });
   const live: Executor | null = wallet
     ? new LiveExecutor(
@@ -62,6 +67,8 @@ async function main() {
   });
 
   await solUsd();
+  // Opstarttest: levert deze RPC de top-10-holderdata?
+  void probeTop10Support(conn);
   feed.start();
   tracker.start();
   positions.start();

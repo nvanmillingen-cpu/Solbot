@@ -29,7 +29,14 @@ export function evaluateFilters(m: TokenMetrics, f: Settings['filters']): Filter
 
   if (f.priceChange.enabled) {
     const v = m.priceChangePct;
-    add('priceChange', `Stijging (${f.priceChange.windowMin} min)`, v !== null && v >= f.priceChange.minPct, v === null ? UNKNOWN : pct(v), `≥ ${pct(f.priceChange.minPct)}`);
+    const max = f.priceChange.maxPct > 0 ? f.priceChange.maxPct : Infinity;
+    add(
+      'priceChange',
+      `Stijging (${f.priceChange.windowMin} min)`,
+      v !== null && v >= f.priceChange.minPct && v <= max,
+      v === null ? UNKNOWN : pct(v),
+      max === Infinity ? `≥ ${pct(f.priceChange.minPct)}` : `${pct(f.priceChange.minPct)} – ${pct(max)}`,
+    );
   }
   if (f.volumeTotal.enabled) {
     const v = m.volumeTotalUsd;
@@ -50,9 +57,15 @@ export function evaluateFilters(m: TokenMetrics, f: Settings['filters']): Filter
       `${usd(f.marketCap.minUsd)} – ${max === Infinity ? '∞' : usd(max)}`,
     );
   }
-  if (f.graduated !== 'any') {
-    const want = f.graduated === 'yes';
-    add('graduated', 'Graduated', m.graduated === want, m.graduated ? 'ja' : 'nee', want ? 'ja' : 'nee');
+  if (f.graduated === 'yes') {
+    add('graduated', 'Graduated', m.graduated, m.graduated ? 'ja' : 'nee', 'ja');
+  } else if (f.graduated === 'no') {
+    // Alleen kopen als het bonding-curve-account echt gevonden is en nog niet voltooid is
+    const v = m.onCurve;
+    add('graduated', 'Op bonding curve', v === true, v === null ? UNKNOWN : v ? 'ja' : 'nee (gemigreerd)', 'ja');
+  }
+  if (f.excludeMayhem) {
+    add('mayhem', 'Geen mayhem mode', !m.mayhem, m.mayhem ? 'mayhem' : 'normaal', 'normaal');
   }
   if (f.minAge.enabled) {
     const v = m.ageMin;

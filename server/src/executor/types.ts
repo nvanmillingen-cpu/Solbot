@@ -20,6 +20,8 @@ export interface Fill {
   tokenAmountRaw: bigint;
   decimals: number;
   executor: string;
+  /** Marktprijs (on-chain curve) op het moment van de fill, voor slippage-analyse. */
+  marketPriceSol?: number;
 }
 
 /** Uitwisselbare executor-laag: paper, Jupiter of PumpPortal. */

@@ -13,7 +13,8 @@ export interface BotState {
   liveTradingEnabled: boolean;
   wallet: { address: string; sol: number | null } | null;
   solUsd: number;
-  feed: { connected: boolean; tradesAvailable: boolean; lastMessageAt: number };
+  feed: { connected: boolean; tradesAvailable: boolean; lastMessageAt: number; lastNewTokenAt: number; rpcFallbackActive: boolean };
+  top10: { ok: boolean | null; lastError: string; checkedAt: number; required: boolean; enabled: boolean };
   tracker: { tracked: number; newTokens: number; migrations: number; curvePolls: number; dexPolls: number; errors: number };
   blocker: string | null;
   positions: OpenPositionView[];

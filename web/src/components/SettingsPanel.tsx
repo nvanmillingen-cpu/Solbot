@@ -131,8 +131,9 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
         <h2>Filters (kopen)</h2>
         <p className="muted">Een token wordt alleen gekocht als het aan álle ingeschakelde filters voldoet. Onbekende data telt als niet voldoen.</p>
         <div className="grid">
-          <Toggle ctx={ctx} path={['filters', 'priceChange']} label="Top % (prijsstijging)" hint="Stijging binnen het venster, of sinds lancering als het token jonger is.">
+          <Toggle ctx={ctx} path={['filters', 'priceChange']} label="Top % (prijsstijging)" hint="Stijging binnen het venster, of sinds lancering als het token jonger is. Met een maximum sla je late pumps over.">
             <Num ctx={ctx} path={['filters', 'priceChange', 'minPct']} label="Minimaal" unit="%" min={-100} />
+            <Num ctx={ctx} path={['filters', 'priceChange', 'maxPct']} label="Maximaal (0 = geen)" unit="%" />
             <Num ctx={ctx} path={['filters', 'priceChange', 'windowMin']} label="Venster" unit="min" />
           </Toggle>
           <Toggle ctx={ctx} path={['filters', 'volumeTotal']} label="Volume totaal">
@@ -152,10 +153,13 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
               label="Graduated (bonding curve voltooid)"
               options={[
                 ['any', 'Maakt niet uit'],
-                ['no', 'Nee (alleen bonding curve)'],
+                ['no', 'Nee (alleen op bonding curve, on-chain gecontroleerd)'],
                 ['yes', 'Ja (alleen gegradueerd)'],
               ]}
             />
+          </div>
+          <div className="rule">
+            <Check ctx={ctx} path={['filters', 'excludeMayhem']} label="Mayhem-mode-tokens overslaan" hint="pump.fun mayhem mode: 2 miljard supply en een AI-agent die meehandelt. In tests de grootste verliezen." />
           </div>
           <Toggle ctx={ctx} path={['filters', 'minAge']} label="Minimale leeftijd">
             <Num ctx={ctx} path={['filters', 'minAge', 'minutes']} label="Minimaal" unit="min" />
@@ -187,7 +191,13 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
           <Toggle ctx={ctx} path={['exits', 'maxHold']} label="Maximale houdtijd">
             <Num ctx={ctx} path={['exits', 'maxHold', 'minutes']} label="Maximaal" unit="min" />
           </Toggle>
-          <Toggle ctx={ctx} path={['exits', 'trailingStop']} label="Trailing stop" hint="Verkoopt als de prijs dit % onder de hoogste prijs sinds aankoop zakt.">
+          <Toggle
+            ctx={ctx}
+            path={['exits', 'trailingStop']}
+            label="Trailing stop"
+            hint="Wordt pas actief zodra de winst de activatiedrempel haalt; daarna verkoopt hij als de prijs dit % onder de hoogste prijs zakt. Activatie 0 = direct vanaf aankoop."
+          >
+            <Num ctx={ctx} path={['exits', 'trailingStop', 'activatePct']} label="Actief vanaf winst" unit="%" />
             <Num ctx={ctx} path={['exits', 'trailingStop', 'pct']} label="Daling vanaf top" unit="%" />
           </Toggle>
         </div>
@@ -243,7 +253,13 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
             hint="Excl. bonding curve/pool. Vereist een eigen RPC (Helius/QuickNode, gratis tier): de publieke RPC weigert deze data, dan wordt de check overgeslagen."
           >
             <Num ctx={ctx} path={['safety', 'maxTop10Pct', 'pct']} label="Maximaal" unit="%" />
+            <Check ctx={ctx} path={['safety', 'maxTop10Pct', 'requireData']} label="Niet kopen als top-10 onbekend is (aanbevolen)" />
           </Toggle>
+          <div className="rule">
+            <h3>Prijscontrole vóór aankoop</h3>
+            <Num ctx={ctx} path={['safety', 'maxQuoteDeviationPct']} label="Max. afwijking quote vs on-chain prijs" unit="%" />
+            <Num ctx={ctx} path={['safety', 'maxPriceMoveBeforeBuyPct']} label="Max. prijsbeweging sinds evaluatie" unit="%" />
+          </div>
           <div className="rule">
             <h3>Datafeed</h3>
             <Num ctx={ctx} path={['tracker', 'watchWindowMin']} label="Token volgen gedurende" unit="min" />

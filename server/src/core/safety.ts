@@ -1,7 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { SOL_MINT } from '../config.js';
 import { logger } from '../logger.js';
-import { bondingCurvePda, curveBuyQuote, curveSellQuote, type CurveState } from '../market/bondingCurve.js';
+import { bondingCurvePda, curveBuyQuote, curvePriceSol, curveSellQuote, fetchCurves, type CurveState } from '../market/bondingCurve.js';
 import { jupQuote } from '../market/jupiter.js';
 import type { Settings } from '../settings.js';
 import type { TokenMetrics } from './metrics.js';
@@ -63,43 +63,73 @@ export async function creatorSharePct(conn: Connection, mint: string, creator: s
 }
 
 let lastTop10Warn = 0;
-/** Tot wanneer de top-10-check overgeslagen wordt na een weigering door de RPC. */
-let top10UnavailableUntil = 0;
 let noRetryConn: Connection | undefined;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * % van de supply in de 10 grootste wallets, zonder de bonding curve (of bij graduated
- * tokens het grootste account = de pool). null als de RPC deze call weigert
- * (de publieke Solana-RPC staat getTokenLargestAccounts niet toe).
- */
-export async function top10SharePct(conn: Connection, mint: string, m: MintInfo, graduated: boolean): Promise<number | null> {
-  if (Date.now() < top10UnavailableUntil) return null;
-  // Eigen verbinding zonder automatische 429-retries (die kosten anders tientallen seconden)
+/** Of de RPC de top-10-holderdata levert (bijgewerkt bij elke poging en bij de opstarttest). */
+export const top10Status = { ok: null as boolean | null, lastError: '', checkedAt: 0 };
+
+function noRetry(conn: Connection): Connection {
+  // Eigen verbinding zonder automatische 429-retries van web3.js (die kosten tientallen seconden)
+  if (!(conn instanceof Connection)) return conn; // test-dubbel
   if (!noRetryConn || noRetryConn.rpcEndpoint !== conn.rpcEndpoint) {
     noRetryConn = new Connection(conn.rpcEndpoint, { commitment: 'confirmed', disableRetryOnRateLimit: true });
   }
-  let accounts: { address: PublicKey; amount: string }[];
-  try {
-    accounts = (await noRetryConn.getTokenLargestAccounts(new PublicKey(mint), 'confirmed')).value;
-  } catch (e) {
-    top10UnavailableUntil = Date.now() + 10 * 60_000;
-    if (Date.now() - lastTop10Warn > 10 * 60_000) {
-      lastTop10Warn = Date.now();
-      logger.warn({ err: String(e).slice(0, 120) }, 'top-10-holdercheck overgeslagen: RPC weigert getTokenLargestAccounts (gebruik een gratis Helius/QuickNode-RPC)');
+  return noRetryConn;
+}
+
+/** getTokenLargestAccounts met maximaal 3 pogingen (400 ms, 1,2 s backoff). */
+export async function largestAccounts(conn: Connection, mint: string, attempts = 3): Promise<{ address: PublicKey; amount: string }[] | null> {
+  let lastErr = '';
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(i === 1 ? 400 : 1200);
+    try {
+      const res = (await noRetry(conn).getTokenLargestAccounts(new PublicKey(mint), 'confirmed')).value;
+      Object.assign(top10Status, { ok: true, lastError: '', checkedAt: Date.now() });
+      return res;
+    } catch (e) {
+      lastErr = String(e instanceof Error ? e.message : e).slice(0, 160);
     }
-    return null;
   }
-  const sorted = accounts.filter((a) => BigInt(a.amount) > 0n).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
-  let holders: typeof sorted;
-  if (!graduated) {
-    const curveAta = associatedTokenAddress(bondingCurvePda(mint), new PublicKey(mint), m.tokenProgram).toBase58();
-    holders = sorted.filter((a) => a.address.toBase58() !== curveAta);
-  } else {
-    holders = sorted.slice(1);
+  Object.assign(top10Status, { ok: false, lastError: lastErr, checkedAt: Date.now() });
+  if (Date.now() - lastTop10Warn > 5 * 60_000) {
+    lastTop10Warn = Date.now();
+    logger.warn({ err: lastErr }, 'top-10-holderdata niet op te halen (RPC weigert getTokenLargestAccounts; gebruik een eigen Helius/QuickNode-RPC)');
   }
-  const top = holders.slice(0, 10).reduce((s, a) => s + BigInt(a.amount), 0n);
-  const supply = BigInt(m.parsed.supply);
-  return supply > 0n ? (Number(top) / Number(supply)) * 100 : null;
+  return null;
+}
+
+/** Opstarttest: ondersteunt de RPC getTokenLargestAccounts? (test op de USDC-mint) */
+export async function probeTop10Support(conn: Connection): Promise<boolean> {
+  const ok = (await largestAccounts(conn, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 2)) !== null;
+  if (ok) logger.info('RPC ondersteunt de top-10-holdercheck');
+  return ok;
+}
+
+/** Berekent het top-10-aandeel uit de grootste accounts, zonder de bonding curve (of bij graduated de pool). */
+export function top10FromAccounts(
+  accounts: { address: PublicKey | string; amount: string }[],
+  supplyRaw: bigint,
+  excludeAddress: string | null,
+): number | null {
+  const sorted = accounts
+    .map((a) => ({ address: typeof a.address === 'string' ? a.address : a.address.toBase58(), amount: BigInt(a.amount) }))
+    .filter((a) => a.amount > 0n)
+    .sort((a, b) => (b.amount > a.amount ? 1 : b.amount < a.amount ? -1 : 0));
+  const holders = excludeAddress ? sorted.filter((a) => a.address !== excludeAddress) : sorted.slice(1);
+  const top = holders.slice(0, 10).reduce((s, a) => s + a.amount, 0n);
+  return supplyRaw > 0n ? (Number(top) / Number(supplyRaw)) * 100 : null;
+}
+
+/**
+ * % van de supply in de 10 grootste wallets, zonder de bonding curve (of bij graduated
+ * tokens het grootste account = de pool). null als de RPC de data niet levert.
+ */
+export async function top10SharePct(conn: Connection, mint: string, m: MintInfo, graduated: boolean): Promise<number | null> {
+  const accounts = await largestAccounts(conn, mint);
+  if (!accounts) return null;
+  const exclude = graduated ? null : associatedTokenAddress(bondingCurvePda(mint), new PublicKey(mint), m.tokenProgram).toBase58();
+  return top10FromAccounts(accounts, BigInt(m.parsed.supply), exclude);
 }
 
 export function checkMintAuthorities(mi: MintInfo): { ok: boolean; reasons: string[] } {
@@ -123,12 +153,19 @@ export function checkMintAuthorities(mi: MintInfo): { ok: boolean; reasons: stri
  * dan is het token mogelijk een honeypot of is er geen liquiditeit.
  * Voor tokens op de bonding curve wordt bij een Jupiter-fout de curve-wiskunde gebruikt.
  */
-export async function roundTripLoss(mint: string, solAmount: number, slippagePct: number, curve?: CurveState): Promise<number> {
+export async function roundTripLoss(
+  mint: string,
+  solAmount: number,
+  slippagePct: number,
+  curve?: CurveState,
+): Promise<{ lossPct: number; quotePriceSol: number | null }> {
   const lamports = BigInt(Math.round(solAmount * 1e9));
   try {
     const buy = await jupQuote(SOL_MINT, mint, lamports, slippagePct);
     const sell = await jupQuote(mint, SOL_MINT, BigInt(buy.outAmount), slippagePct);
-    return (1 - Number(sell.outAmount) / Number(lamports)) * 100;
+    // Effectieve koopprijs volgens de quote (SOL per heel token, 6 decimals)
+    const quotePriceSol = solAmount / (Number(buy.outAmount) / 1e6);
+    return { lossPct: (1 - Number(sell.outAmount) / Number(lamports)) * 100, quotePriceSol };
   } catch (e) {
     if (curve && !curve.complete) {
       const tokens = curveBuyQuote(curve, lamports);
@@ -141,7 +178,7 @@ export async function roundTripLoss(mint: string, solAmount: number, slippagePct
         realTokenReserves: curve.realTokenReserves - tokens,
       };
       const back = curveSellQuote(after, tokens);
-      return (1 - Number(back) / Number(lamports)) * 100;
+      return { lossPct: (1 - Number(back) / Number(lamports)) * 100, quotePriceSol: null };
     }
     throw new Error(`verkoop-quote mislukt: ${String(e instanceof Error ? e.message : e)}`);
   }
@@ -152,11 +189,31 @@ export async function preBuyChecks(
   s: Settings,
   m: TokenMetrics,
   solAmount: number,
-  curve?: CurveState,
   creator?: string,
 ): Promise<SafetyResult> {
   const reasons: string[] = [];
   const safety = s.safety;
+
+  // 1. Verse on-chain curve: klopt "op bonding curve" nog, en is de prijs niet weggelopen?
+  let fresh: CurveState | undefined;
+  try {
+    fresh = (await fetchCurves(conn, [m.mint])).get(m.mint);
+  } catch (e) {
+    return { ok: false, reasons: [`curve ophalen mislukt: ${String(e).slice(0, 100)}`], permanent: false };
+  }
+  const onCurve = Boolean(fresh && !fresh.complete);
+  if (s.filters.graduated === 'no' && !onCurve) {
+    return { ok: false, reasons: [fresh ? 'bonding curve is voltooid (gemigreerd)' : 'geen pump.fun bonding curve gevonden'], permanent: true };
+  }
+  if (s.filters.excludeMayhem && fresh?.mayhem) return { ok: false, reasons: ['mayhem mode'], permanent: true };
+  const freshPrice = onCurve && fresh ? curvePriceSol(fresh) : null;
+  if (freshPrice && m.priceSol) {
+    const move = (freshPrice / m.priceSol - 1) * 100;
+    if (Math.abs(move) > safety.maxPriceMoveBeforeBuyPct) {
+      return { ok: false, reasons: [`prijs ${move.toFixed(0)}% veranderd sinds evaluatie`], permanent: false };
+    }
+  }
+  creator ??= fresh?.creator;
 
   if (safety.minLiquidityUsd.enabled && m.graduated) {
     if (m.liquidityUsd === null || m.liquidityUsd < safety.minLiquidityUsd.usd) {
@@ -192,7 +249,10 @@ export async function preBuyChecks(
     }
   }
   if (safety.maxTop10Pct.enabled) {
-    top10Pct = await top10SharePct(conn, m.mint, mi, m.graduated);
+    top10Pct = await top10SharePct(conn, m.mint, mi, !onCurve);
+    if (top10Pct === null && safety.maxTop10Pct.requireData) {
+      return { ok: false, reasons: ['top-10-holders onbekend (RPC-fout); check is verplicht'], permanent: false, creatorPct, top10Pct };
+    }
     if (top10Pct !== null && top10Pct > safety.maxTop10Pct.pct) {
       return { ok: false, reasons: [`top-10 holders bezitten ${top10Pct.toFixed(1)}% > ${safety.maxTop10Pct.pct}%`], permanent: false, creatorPct, top10Pct };
     }
@@ -201,7 +261,13 @@ export async function preBuyChecks(
   let roundTripLossPct: number | undefined;
   if (safety.sellQuoteCheck) {
     try {
-      roundTripLossPct = await roundTripLoss(m.mint, solAmount, s.general.slippagePct, curve);
+      const rt = await roundTripLoss(m.mint, solAmount, s.general.slippagePct, onCurve ? fresh : undefined);
+      roundTripLossPct = rt.lossPct;
+      // Quote moet passen bij de echte on-chain prijs (anders is de fill onbetrouwbaar)
+      if (rt.quotePriceSol && freshPrice) {
+        const dev = (rt.quotePriceSol / freshPrice - 1) * 100;
+        if (Math.abs(dev) > safety.maxQuoteDeviationPct) reasons.push(`quote wijkt ${dev.toFixed(1)}% af van on-chain prijs`);
+      }
       if (roundTripLossPct > safety.maxRoundTripLossPct) {
         reasons.push(`round-trip verlies ${roundTripLossPct.toFixed(1)}% > ${safety.maxRoundTripLossPct}%`);
       }

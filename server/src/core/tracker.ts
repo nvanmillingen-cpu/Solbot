@@ -1,6 +1,7 @@
 import { PublicKey, type Connection } from '@solana/web3.js';
 import { logger } from '../logger.js';
 import type { PumpPortalFeed, NewTokenEvent, TradeEvent, MigrationEvent } from '../feed/pumpportal.js';
+import { RpcLogFeed } from '../feed/rpcLogs.js';
 import { curvePriceSol, fetchCurves } from '../market/bondingCurve.js';
 import { fetchDexInfo } from '../market/dexscreener.js';
 import { solUsdCached } from '../market/solPrice.js';
@@ -16,10 +17,12 @@ export class TokenTracker {
   /** Mints die niet opgeruimd mogen worden (open posities). */
   readonly pinned = new Set<string>();
   private timers: NodeJS.Timeout[] = [];
+  readonly rpcFeed: RpcLogFeed;
+  private startedAt = Date.now();
   private curveBusy = false;
   private dexBusy = false;
   private lastHoldersWarn = 0;
-  stats = { newTokens: 0, migrations: 0, curvePolls: 0, dexPolls: 0, lastCurvePollAt: 0, lastDexPollAt: 0, errors: 0 };
+  stats = { rpcFeedTokens: 0, newTokens: 0, migrations: 0, curvePolls: 0, dexPolls: 0, lastCurvePollAt: 0, lastDexPollAt: 0, errors: 0 };
 
   constructor(
     private conn: Connection,
@@ -27,6 +30,9 @@ export class TokenTracker {
     private settings: () => Settings,
   ) {
     feed.on('newToken', (e: NewTokenEvent) => this.onNewToken(e));
+    // Fallback: als PumpPortal 60 s geen nieuwe tokens levert, ook de RPC-logs gebruiken
+    this.rpcFeed = new RpcLogFeed(conn);
+    this.rpcFeed.on('newToken', (e: NewTokenEvent) => this.onNewToken(e));
     feed.on('trade', (e: TradeEvent) => this.onTrade(e));
     feed.on('migration', (e: MigrationEvent) => this.onMigration(e));
   }
@@ -37,6 +43,7 @@ export class TokenTracker {
     this.timers.push(setInterval(() => void this.pollCurves(), s.curvePollSec * 1000));
     this.timers.push(setInterval(() => void this.pollDex(), s.dexPollSec * 1000));
     this.timers.push(setInterval(() => this.prune(), 30_000));
+    this.timers.push(setInterval(() => this.checkFeed(), 10_000));
   }
 
   /** Herstart timers na een instellingswijziging. */
@@ -49,11 +56,20 @@ export class TokenTracker {
     this.timers = [];
   }
 
+  private checkFeed() {
+    const last = Math.max(this.feed.lastNewTokenAt, this.startedAt);
+    if (!this.rpcFeed.active && Date.now() - last > 60_000) {
+      logger.warn('PumpPortal levert al 60 s geen nieuwe tokens');
+      this.rpcFeed.start();
+    }
+  }
+
   private onNewToken(e: NewTokenEvent) {
     // Alleen pump.fun (PumpPortal streamt ook o.a. letsbonk-tokens)
     if (e.pool !== 'pump') return;
-    this.stats.newTokens++;
     if (this.tokens.has(e.mint)) return;
+    this.stats.newTokens++;
+    if (e.source === 'rpc') this.stats.rpcFeedTokens++;
     const launchPrice = e.vTokensInBondingCurve > 0 ? e.vSolInBondingCurve / e.vTokensInBondingCurve : undefined;
     const t = newTrackedToken({
       mint: e.mint,
@@ -65,12 +81,13 @@ export class TokenTracker {
       createdAt: e.receivedAt,
       initialBuySol: e.initialBuySol,
       launchPriceSol: launchPrice,
-      tradeStream: this.feed.tradesAvailable,
+      mayhem: e.mayhem,
+      tradeStream: this.feed.tradesAvailable && e.source === 'pumpportal',
     });
     if (launchPrice) addPrice(t, { t: e.receivedAt, priceSol: launchPrice });
     if (t.tradeStream && e.creator && e.initialBuySol > 0) t.balances.set(e.creator, e.initialBuyTokens || 1);
     this.tokens.set(e.mint, t);
-    this.feed.subscribeTrades([e.mint]);
+    if (e.source === 'pumpportal') this.feed.subscribeTrades([e.mint]);
     this.enforceMax();
   }
 
@@ -129,6 +146,9 @@ export class TokenTracker {
         }
         t.curve = c;
         t.curveUpdatedAt = now;
+        if (c.mayhem) t.mayhem = true;
+        if (!t.creator && c.creator) t.creator = c.creator;
+        if (!t.launchPriceSol && !t.prices.length) t.launchPriceSol = curvePriceSol(c);
         if (c.complete) {
           if (!t.graduated) logger.info({ mint, symbol: t.symbol }, 'bonding curve voltooid (graduated)');
           t.graduated = true;

@@ -8,6 +8,13 @@ export interface CurveState {
   realSolReserves: bigint;
   tokenTotalSupply: bigint;
   complete: boolean;
+  /** Maker van het token (nieuwere curve-accounts). */
+  creator?: string;
+  /**
+   * pump.fun "mayhem mode": er wordt 1 miljard extra gemint voor een AI-agent die het token
+   * verhandelt (mint-supply 2B i.p.v. 1B). In tests gaven deze tokens de grootste verliezen.
+   */
+  mayhem: boolean;
 }
 
 const PROGRAM = new PublicKey(PUMP_PROGRAM_ID);
@@ -25,7 +32,7 @@ export function bondingCurvePda(mint: string): PublicKey {
   return pda;
 }
 
-/** Layout: 8 bytes discriminator, 5× u64, 1 bool, daarna creator e.d. */
+/** Layout: 8 bytes discriminator, 5× u64, complete (bool, offset 48), creator (32, offset 49), is_mayhem_mode (bool, offset 81). */
 export function decodeCurve(data: Buffer | Uint8Array): CurveState | null {
   const buf = Buffer.from(data);
   if (buf.length < 8 + 5 * 8 + 1) return null;
@@ -35,14 +42,17 @@ export function decodeCurve(data: Buffer | Uint8Array): CurveState | null {
     o += 8;
     return v;
   };
-  return {
+  const st: CurveState = {
     virtualTokenReserves: u64(),
     virtualSolReserves: u64(),
     realTokenReserves: u64(),
     realSolReserves: u64(),
     tokenTotalSupply: u64(),
     complete: buf[o] === 1,
+    mayhem: buf.length > 81 && buf[81] === 1,
   };
+  if (buf.length >= 81) st.creator = new PublicKey(buf.subarray(49, 81)).toBase58();
+  return st;
 }
 
 /** Prijs in SOL per (hele) token. */
@@ -51,8 +61,13 @@ export function curvePriceSol(c: Pick<CurveState, 'virtualSolReserves' | 'virtua
   return Number(c.virtualSolReserves) / LAMPORTS_PER_SOL / (Number(c.virtualTokenReserves) / 10 ** PUMP_TOKEN_DECIMALS);
 }
 
+/** Totale supply in hele tokens: 2 miljard bij mayhem mode, anders 1 miljard. */
+export function curveSupply(c: Pick<CurveState, 'mayhem'>): number {
+  return c.mayhem ? 2 * PUMP_TOTAL_SUPPLY : PUMP_TOTAL_SUPPLY;
+}
+
 export function curveMarketCapSol(c: CurveState): number {
-  return curvePriceSol(c) * PUMP_TOTAL_SUPPLY;
+  return curvePriceSol(c) * curveSupply(c);
 }
 
 /** Aantal (ruwe) tokens voor `lamportsIn` SOL, na fee. */

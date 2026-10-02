@@ -23,6 +23,8 @@ export interface TrackedToken {
   createdAt?: number;
   source: 'new' | 'migration' | 'manual';
   graduated: boolean;
+  /** pump.fun mayhem mode (2B supply, AI-agent handelt mee). */
+  mayhem: boolean;
   launchPriceSol?: number;
   initialBuySol: number;
   prices: PricePoint[];
@@ -46,6 +48,9 @@ export interface TokenMetrics {
   name: string;
   ageMin: number | null;
   graduated: boolean;
+  /** true = bonding-curve-account gevonden en niet voltooid; false = voltooid/gemigreerd; null = (nog) onbekend. */
+  onCurve: boolean | null;
+  mayhem: boolean;
   priceSol: number | null;
   marketCapUsd: number | null;
   priceChangePct: number | null;
@@ -66,6 +71,7 @@ export function newTrackedToken(p: Partial<TrackedToken> & Pick<TrackedToken, 'm
     symbol: '',
     firstSeenAt: Date.now(),
     graduated: false,
+    mayhem: false,
     initialBuySol: 0,
     prices: [],
     curveVolume: [],
@@ -110,7 +116,8 @@ export function computeMetrics(t: TrackedToken, now: number, solUsd: number, pri
 
   // Market cap
   let marketCapUsd: number | null = null;
-  if (priceSol && usd) marketCapUsd = priceSol * PUMP_TOTAL_SUPPLY * usd;
+  const supply = t.mayhem ? 2 * PUMP_TOTAL_SUPPLY : PUMP_TOTAL_SUPPLY;
+  if (priceSol && usd) marketCapUsd = priceSol * supply * usd;
   else if (t.dex?.marketCapUsd) marketCapUsd = t.dex.marketCapUsd;
 
   // Prijsverandering binnen venster
@@ -194,6 +201,8 @@ export function computeMetrics(t: TrackedToken, now: number, solUsd: number, pri
     name: t.name,
     ageMin,
     graduated: t.graduated,
+    onCurve: t.graduated ? false : t.curve ? !t.curve.complete : null,
+    mayhem: t.mayhem,
     priceSol,
     marketCapUsd,
     priceChangePct,

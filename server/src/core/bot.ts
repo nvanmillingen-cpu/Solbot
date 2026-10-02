@@ -177,7 +177,7 @@ export class Bot {
       },
       'kandidaat voldoet aan filters, veiligheidscheck',
     );
-    const safety = await preBuyChecks(this.conn, s, m, s.risk.solPerTrade, tracked?.curve, tracked?.creator);
+    const safety = await preBuyChecks(this.conn, s, m, s.risk.solPerTrade, tracked?.creator);
     if (!safety.ok) {
       this.cooldown.set(m.mint, safety.permanent ? Infinity : Date.now() + 5 * 60_000);
       logger.info({ symbol: m.symbol, redenen: safety.reasons }, 'veiligheidscheck afgekeurd');

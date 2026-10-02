@@ -30,11 +30,21 @@ export const settingsSchema = z.object({
   filters: z
     .object({
       /** Minimale prijsstijging in % binnen het venster (of sinds lancering als het token jonger is). */
-      priceChange: toggle({ minPct: z.number().default(25), windowMin: z.number().positive().default(10) }, true).prefault({}),
+      priceChange: toggle(
+        {
+          minPct: z.number().default(25),
+          /** Maximale stijging (0 = geen maximum): om te late pumps te vermijden. */
+          maxPct: pos.default(0),
+          windowMin: z.number().positive().default(10),
+        },
+        true,
+      ).prefault({}),
       volumeTotal: toggle({ minUsd: pos.default(8000) }, true).prefault({}),
       volume10m: toggle({ minUsd: pos.default(4000) }, true).prefault({}),
       marketCap: toggle({ minUsd: pos.default(10000), maxUsd: pos.default(60000) }, true).prefault({}),
       graduated: z.enum(['any', 'yes', 'no']).default('no'),
+      /** Sla pump.fun mayhem-mode-tokens over (2B supply, AI-agent handelt mee). */
+      excludeMayhem: z.boolean().default(true),
       minAge: toggle({ minutes: pos.default(2) }, true).prefault({}),
       maxAge: toggle({ minutes: pos.default(30) }, true).prefault({}),
       minHolders: toggle({ count: z.number().int().min(0).default(15) }).prefault({}),
@@ -45,7 +55,14 @@ export const settingsSchema = z.object({
       stopLoss: toggle({ pct: z.number().positive().max(100).default(20) }, true).prefault({}),
       takeProfit: toggle({ pct: z.number().positive().default(50) }, true).prefault({}),
       maxHold: toggle({ minutes: z.number().positive().default(15) }, true).prefault({}),
-      trailingStop: toggle({ pct: z.number().positive().max(100).default(15) }, true).prefault({}),
+      trailingStop: toggle(
+        {
+          pct: z.number().positive().max(100).default(15),
+          /** Trailing stop pas actief zodra de winst (op de piek) dit % heeft bereikt. 0 = direct vanaf aankoop. */
+          activatePct: pos.default(20),
+        },
+        true,
+      ).prefault({}),
     })
     .prefault({}),
   safety: z
@@ -60,7 +77,18 @@ export const settingsSchema = z.object({
       /** Max. % van de supply dat de maker (dev) nog bezit: beschermt tegen een dev-dump. */
       maxCreatorPct: toggle({ pct: pos.max(100).default(5) }, true).prefault({}),
       /** Max. % van de supply in de 10 grootste wallets (excl. bonding curve/pool). Vereist een RPC die getTokenLargestAccounts toestaat. */
-      maxTop10Pct: toggle({ pct: pos.max(100).default(35) }, true).prefault({}),
+      maxTop10Pct: toggle(
+        {
+          pct: pos.max(100).default(35),
+          /** Niet kopen als de top-10 niet bepaald kan worden (RPC-fout). Veilig: aan laten. */
+          requireData: z.boolean().default(true),
+        },
+        true,
+      ).prefault({}),
+      /** Max. afwijking tussen de quote en de actuele on-chain curveprijs (beschermt tegen foute fills). */
+      maxQuoteDeviationPct: pos.max(100).default(10),
+      /** Max. prijsverandering tussen evaluatie (filters) en aankoop. */
+      maxPriceMoveBeforeBuyPct: pos.max(1000).default(25),
     })
     .prefault({}),
   tracker: z

@@ -8,7 +8,7 @@ const exits = () => {
   e.stopLoss = { enabled: true, pct: 25 };
   e.takeProfit = { enabled: true, pct: 60 };
   e.maxHold = { enabled: true, minutes: 20 };
-  e.trailingStop = { enabled: false, pct: 20 };
+  e.trailingStop = { enabled: false, pct: 20, activatePct: 0 };
   return e;
 };
 const now = 1_000_000_000;
@@ -57,5 +57,41 @@ describe('evaluateExit', () => {
     e.maxHold.enabled = false;
     expect(evaluateExit({ ...pos, openedAt: 0 }, 0.01, now, e)).toBeNull();
     expect(evaluateExit(pos, 100, now, e)).toBeNull();
+  });
+});
+
+describe('trailing stop met activatiedrempel', () => {
+  const e = () => {
+    const x = exits();
+    x.trailingStop = { enabled: true, pct: 15, activatePct: 20 };
+    x.takeProfit.enabled = false;
+    return x;
+  };
+
+  it('vuurt niet op ruis vlak na aankoop (vroeger direct TRAIL)', () => {
+    // -15% vlak na de koop: met activatie 20% geen trailing stop, SL (25%) ook nog niet
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.02 }, 0.85, now, e())).toBeNull();
+  });
+
+  it('wordt pas actief als de piek de activatiedrempel haalt', () => {
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.19 }, 1.0, now, e())).toBeNull();
+    // piek 1,30 → actief; 15% eronder = 1,105
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.3 }, 1.11, now, e())).toBeNull();
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.3 }, 1.1, now, e())).toBe('TRAIL');
+  });
+
+  it('beschermt winst: na activatie eindigt een trail-exit boven instap', () => {
+    // Slechtste geval: piek precies op 1,20, daarna 15% eraf → 1,02 (boven instap)
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.2 }, 1.02, now, e())).toBe('TRAIL');
+  });
+
+  it('activatie 0 = oude gedrag (direct vanaf aankoop)', () => {
+    const x = e();
+    x.trailingStop.activatePct = 0;
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.0 }, 0.85, now, x)).toBe('TRAIL');
+  });
+
+  it('stop-loss blijft werken als de trail nog niet actief is', () => {
+    expect(evaluateExit({ ...pos, peakPriceSol: 1.05 }, 0.7, now, e())).toBe('SL');
   });
 });

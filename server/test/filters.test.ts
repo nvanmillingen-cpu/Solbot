@@ -9,6 +9,8 @@ const base: TokenMetrics = {
   name: 'Test',
   ageMin: 5,
   graduated: false,
+  onCurve: true,
+  mayhem: false,
   priceSol: 1e-7,
   marketCapUsd: 20_000,
   priceChangePct: 50,
@@ -69,5 +71,34 @@ describe('evaluateFilters', () => {
     const r = evaluateFilters({ ...base, holders: null }, f);
     expect(r.pass).toBe(false);
     expect(passesExceptHolders(r)).toBe(true);
+  });
+});
+
+describe('bonding-curve-, mayhem- en max-stijgingfilter', () => {
+  it('"alleen bonding curve" vereist een gevonden, niet-voltooide curve', () => {
+    const f = defaultSettings().filters; // graduated: 'no'
+    expect(evaluateFilters({ ...base, onCurve: true }, f).pass).toBe(true);
+    const unknown = evaluateFilters({ ...base, onCurve: null }, f);
+    expect(unknown.pass).toBe(false);
+    expect(unknown.checks.find((c) => c.key === 'graduated')?.value).toBe('onbekend');
+    expect(evaluateFilters({ ...base, onCurve: false }, f).pass).toBe(false);
+  });
+
+  it('slaat mayhem-mode-tokens standaard over', () => {
+    const f = defaultSettings().filters;
+    expect(f.excludeMayhem).toBe(true);
+    expect(evaluateFilters({ ...base, mayhem: true }, f).pass).toBe(false);
+    f.excludeMayhem = false;
+    expect(evaluateFilters({ ...base, mayhem: true }, f).pass).toBe(true);
+  });
+
+  it('maximale stijging sluit late pumps uit (0 = geen maximum)', () => {
+    const f = defaultSettings().filters;
+    expect(f.priceChange.maxPct).toBe(0);
+    expect(evaluateFilters({ ...base, priceChangePct: 850 }, f).pass).toBe(true);
+    f.priceChange.maxPct = 150;
+    expect(evaluateFilters({ ...base, priceChangePct: 850 }, f).pass).toBe(false);
+    expect(evaluateFilters({ ...base, priceChangePct: 150 }, f).pass).toBe(true);
+    expect(evaluateFilters({ ...base, priceChangePct: 20 }, f).pass).toBe(false);
   });
 });

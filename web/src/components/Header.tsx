@@ -30,7 +30,10 @@ export function Header({ state, connected, onStart, onStop, onSellAll, onToggleM
 
       <div className="meta">
         <span title="Verbinding dashboard ↔ bot">{connected ? 'Dashboard verbonden' : 'Dashboard niet verbonden'}</span>
-        <span title="PumpPortal datafeed">Feed: {state?.feed.connected ? 'verbonden' : 'offline'}</span>
+        <span title="PumpPortal datafeed">
+          Feed: {state?.feed.connected ? 'verbonden' : 'offline'}
+          {state?.feed.rpcFallbackActive ? ' + RPC-fallback' : ''}
+        </span>
         <span>Gevolgd: {state?.tracker.tracked ?? '–'} tokens</span>
         <span>SOL ${state?.solUsd ? state.solUsd.toFixed(2) : '–'}</span>
         {state?.wallet && (
@@ -66,6 +69,13 @@ export function Header({ state, connected, onStart, onStop, onSellAll, onToggleM
         </button>
       </div>
       {state?.blocker && <div className="blocker">Kopen gepauzeerd: {state.blocker}</div>}
+      {state?.top10.enabled && state.top10.ok === false && (
+        <div className="blocker">
+          Top-10-holdercheck werkt niet met deze RPC
+          {state.top10.required ? ': er wordt niets gekocht tot dit opgelost is' : ' en wordt overgeslagen'}. Zet een Helius/QuickNode-URL in RPC_URL (.env). Fout:{' '}
+          {state.top10.lastError}
+        </div>
+      )}
     </header>
   );
 }

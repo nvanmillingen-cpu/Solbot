@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS positions (
   pnl_pct REAL,
   buy_sig TEXT,
   sell_sig TEXT,
-  graduated INTEGER NOT NULL DEFAULT 0
+  graduated INTEGER NOT NULL DEFAULT 0,
+  entry_market_price_sol REAL,     -- on-chain prijs bij aankoop (vergelijk met entry_price_sol)
+  exit_trigger_price_sol REAL      -- prijs waarop de exit-regel triggerde (vergelijk met exit_price_sol)
 );
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
@@ -57,6 +59,10 @@ export function openDb(file: string): Db {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  // Migraties voor bestaande databases
+  const cols = new Set((db.prepare('PRAGMA table_info(positions)').all() as { name: string }[]).map((c) => c.name));
+  if (!cols.has('entry_market_price_sol')) db.exec('ALTER TABLE positions ADD COLUMN entry_market_price_sol REAL');
+  if (!cols.has('exit_trigger_price_sol')) db.exec('ALTER TABLE positions ADD COLUMN exit_trigger_price_sol REAL');
   return db;
 }
 

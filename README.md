@@ -103,11 +103,12 @@ Een token wordt alleen gekocht als het aan **alle** ingeschakelde filters voldoe
 
 | Filter | Betekenis |
 |---|---|
-| Top % (prijsstijging) | Minimale prijsstijging in % binnen het venster (standaard 10 min). Is het token jonger dan het venster, dan telt de stijging sinds lancering. |
+| Top % (prijsstijging) | Minimale (en optioneel maximale) prijsstijging in % binnen het venster (standaard 10 min). Is het token jonger dan het venster, dan telt de stijging sinds lancering. Met een **maximum** sla je late pumps over (bijvoorbeeld max. 150%). 0 = geen maximum. |
 | Volume totaal | Minimaal totaalvolume in USD. |
 | Volume laatste 10 min | Minimaal volume in USD over de laatste 10 minuten. |
 | Market cap min/max | Market cap in USD (prijs × 1 miljard supply × SOL/USD). Max 0 = geen maximum. |
-| Graduated | *Nee*: alleen tokens op de bonding curve. *Ja*: alleen tokens die gemigreerd zijn naar PumpSwap. *Maakt niet uit*: beide. |
+| Graduated | *Nee*: alleen tokens op de bonding curve. Dit wordt **on-chain gecontroleerd**: het pump.fun-curve-account moet bestaan en nog niet voltooid zijn, ook vlak vóór de aankoop nog een keer. *Ja*: alleen tokens die gemigreerd zijn naar PumpSwap. *Maakt niet uit*: beide. |
+| Mayhem mode overslaan | Slaat pump.fun-tokens in "mayhem mode" over (2 miljard supply, een AI-agent handelt mee). Standaard aan: in tests gaven deze tokens de grootste verliezen (−76% en −92%). |
 | Minimale / maximale leeftijd | Minuten sinds het token werd aangemaakt (bij gemigreerde tokens: sinds de bot het zag). |
 | Minimaal aantal holders | Zie [beperkingen](#holders). |
 
@@ -118,7 +119,7 @@ Een token wordt alleen gekocht als het aan **alle** ingeschakelde filters voldoe
 | Stop-loss | Verkoop als de P&L ≤ −X%. |
 | Take-profit | Verkoop als de P&L ≥ +X%. |
 | Max. houdtijd | Verkoop na X minuten, ongeacht de prijs. |
-| Trailing stop | Verkoop als de prijs X% onder de hoogste prijs sinds aankoop zakt. |
+| Trailing stop | Verkoop als de prijs X% onder de hoogste prijs sinds aankoop zakt. De trailing stop wordt pas **actief** zodra de winst de activatiedrempel haalt (standaard 20%). Zo raakt normale ruis vlak na de koop hem niet meer, en eindigt een trail-exit na activatie boven de instapprijs. Activatie 0 = direct vanaf aankoop. |
 
 De P&L wordt berekend ten opzichte van de **effectieve instapprijs**, inclusief fees en slippage. Bij meerdere treffers tegelijk geldt de volgorde SL → trailing → TP → tijd.
 
@@ -136,7 +137,8 @@ Er wordt geen betaalde dienst gebruikt. Alle bronnen zijn gratis, maar wel onoff
 
 | Bron | Gebruikt voor | Beperkingen |
 |---|---|---|
-| **PumpPortal websocket** (`wss://pumpportal.fun/api/data`) | Nieuwe tokens, migraties | Gratis voor nieuwe tokens en migraties. **Per-token trades (`subscribeTokenTrade`) vereisen sinds kort een API-sleutel** van een wallet met ≥ 0,02 SOL bij PumpPortal. Zonder sleutel schat de bot het volume zelf (zie hieronder). Verbreekt soms de verbinding: de bot verbindt automatisch opnieuw met backoff. |
+| **PumpPortal websocket** (`wss://pumpportal.fun/api/data`) | Nieuwe tokens, migraties | Gratis voor nieuwe tokens en migraties. **Per-token trades (`subscribeTokenTrade`) vereisen sinds kort een API-sleutel** van een wallet met ≥ 0,02 SOL bij PumpPortal. Zonder sleutel schat de bot het volume zelf (zie hieronder). Verbreekt soms de verbinding: de bot verbindt automatisch opnieuw met backoff. **Valt PumpPortal 60 seconden stil, dan schakelt de bot automatisch over op de RPC-fallbackfeed** (zie hieronder). |
+| **Solana RPC: programmalogs** (`logsSubscribe` op het pump.fun-programma) | Fallback voor nieuwe tokens | Gratis. De bot decodeert het pump.fun `CreateEvent` (mint, naam, maker, eerste aankoop) rechtstreeks uit de logs. Werkt ook op de publieke RPC, maar levert veel dataverkeer. In het dashboard staat dan "+ RPC-fallback" achter de feedstatus. |
 | **Solana RPC**: bonding-curve-account | Exacte prijs, market cap, liquiditeit en status (graduated) van tokens op de curve | Dit is de meest betrouwbare bron. De publieke RPC (`api.mainnet-beta.solana.com`) is streng gelimiteerd. Bij honderden gevolgde tokens raad ik een gratis Helius- of QuickNode-sleutel aan. Er worden max. 100 accounts per call opgehaald. |
 | **DexScreener API** (`/tokens/v1/solana/...`) | Volume (5m/1u/24u), prijsverandering, liquiditeit en prijs van graduated tokens | Gratis, 300 requests/min (de bot gebruikt max. 200/min, 30 tokens per call). **Indexeert brand-nieuwe tokens pas na wat handel**, vaak na enkele minuten. Geeft geen 10-minutenvolume: de bot berekent dat uit het verschil tussen 24u-volume-snapshots. |
 | **Jupiter** (`lite-api.jup.ag`) | Quotes (paper-fills, honeypot-check), swaps (live), prijzen van graduated tokens en de SOL/USD-prijs | Gratis zonder sleutel, maar met een lage limiet (de bot blijft onder 50/min). Jupiter verwijst gebruikers steeds meer naar `api.jup.ag` met een gratis sleutel (portal.jup.ag). Vul in dat geval `JUPITER_API_URL` en `JUPITER_API_KEY` in. |
@@ -159,7 +161,8 @@ In het tabblad *Kandidaten* zie je per token welke bron gebruikt is.
 ### Overige beperkingen
 
 - **Leeftijd van gemigreerde tokens**: de bot kent alleen het moment van migratie, niet het aanmaakmoment.
-- **Market cap** gaat uit van de vaste pump.fun-supply van 1 miljard tokens.
+- **Market cap** gaat uit van de pump.fun-supply van 1 miljard tokens, of 2 miljard bij mayhem mode (uit het curve-account gelezen).
+- **Mint-adressen eindigen niet altijd op `pump`.** pump.fun maakt niet altijd een "vanity"-adres. De bot controleert daarom on-chain of er een pump.fun bonding curve bij het token hoort; de naam van het adres zegt niets.
 - De bot volgt alleen tokens die tijdens het draaien zijn aangemaakt of gemigreerd. Oudere tokens worden niet ontdekt.
 
 ## Aankoop en verkoop (executors)
@@ -180,6 +183,10 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
 
 **Realtime bewaking**: voor open posities op de bonding curve abonneert de bot zich via de RPC-websocket op het curve-account (`accountSubscribe`, gratis). Elke trade op het token wordt daardoor direct tegen de exit-regels gehouden. Daarnaast is er een poll elke seconde, en voor graduated tokens elke 3 seconden via Jupiter/DexScreener. Let op: een dump in één transactie (bijvoorbeeld de maker die alles verkoopt) kan geen enkele stop-loss voorkomen. De eerstvolgende prijs is dan al veel lager.
 
+**Slippage zichtbaar**: per trade slaat de bot de on-chain marktprijs bij aankoop op, en de prijs waarop de exit-regel triggerde. In de tradehistorie zie je in de kolom *Slippage exit* hoeveel de werkelijke verkoop daarvan afweek. Wijkt een fill meer dan 15% af, dan komt er een waarschuwing in de log.
+
+**Paper-fills** voor tokens op de bonding curve worden berekend met zowel de Jupiter-quote als de exacte pump.fun-curvewiskunde op een verse on-chain stand. De **ongunstigste** van de twee telt, zodat paper mode niet te optimistisch is.
+
 **Sell-failsafe**: mislukt een verkoop helemaal, dan blijft de positie open met de getriggerde exit-reden. De monitor probeert het opnieuw met oplopende wachttijd (5 s tot 60 s) en elke keer +5% slippage (max. 50%), ook als de prijs intussen herstelt. In het dashboard zie je dan "verkoop mislukt (n×)".
 
 ## Veiligheid
@@ -191,7 +198,11 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
   - **Verkoop-quote**: de bot vraagt een koop-quote en daarna een verkoop-quote voor dezelfde tokens. Mislukt de verkoop-quote, of is het round-trip-verlies groter dan het maximum, dan koopt de bot niet (honeypot- en liquiditeitscheck).
   - Minimale liquiditeit voor graduated tokens.
   - **Max. bezit van de maker** (standaard 5%): de bot leest de huidige tokenbalans van de maker uit. Heeft die nog een grote zak, dan is het dump-risico hoog. Dit werkt ook op de publieke RPC.
-  - **Max. bezit top-10 holders** (standaard 35%, zonder bonding curve of pool): vangt snipers en bundels. **Vereist een eigen RPC** (Helius of QuickNode, gratis tier). De publieke Solana-RPC en andere gratis publieke endpoints weigeren `getTokenLargestAccounts`. Zonder eigen RPC wordt deze check overgeslagen en staat er een waarschuwing in de log.
+  - **Max. bezit top-10 holders** (standaard 35%, zonder bonding curve of pool): vangt snipers en bundels. **Vereist een eigen RPC** (Helius of QuickNode, gratis tier). De publieke Solana-RPC en andere gratis publieke endpoints weigeren `getTokenLargestAccounts`.
+    - Bij een tijdelijke fout (429) probeert de bot het tot 3 keer.
+    - Lukt het niet, dan **koopt de bot niet** (instelling *Niet kopen als top-10 onbekend is*, standaard aan).
+    - Bij het opstarten test de bot of de RPC deze data levert. Staat in de log "RPC ondersteunt de top-10-holdercheck", dan is het goed. Werkt het niet, dan staat er een rode melding in het dashboard.
+  - **Prijscontrole vlak vóór aankoop**: de bot haalt de curve opnieuw on-chain op. Hij koopt niet als de prijs sinds de filterevaluatie meer dan 25% veranderde, of als de koop-quote meer dan 10% afwijkt van de on-chain prijs (bescherming tegen foute fills).
 - Afgekeurde tokens krijgen een cooldown. Bij authority-problemen worden ze permanent overgeslagen.
 - Het dashboard luistert standaard alleen op `127.0.0.1` en heeft **geen login**. Stel `HOST` niet open naar internet.
 - Alles wordt gelogd naar `logs/` (debugniveau in het bestand).

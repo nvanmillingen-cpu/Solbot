@@ -16,6 +16,9 @@ export interface NewTokenEvent {
   vTokensInBondingCurve: number;
   marketCapSol: number;
   pool: string;
+  /** pump.fun mayhem mode (volgens PumpPortal; de curve-vlag is leidend). */
+  mayhem: boolean;
+  source: 'pumpportal' | 'rpc';
   receivedAt: number;
 }
 
@@ -52,6 +55,8 @@ export class PumpPortalFeed extends EventEmitter {
   private pingTimer?: NodeJS.Timeout;
   connected = false;
   lastMessageAt = 0;
+  /** Laatste nieuwe token via PumpPortal (voor de fallback-feed). */
+  lastNewTokenAt = 0;
   readonly tradesAvailable = Boolean(config.pumpPortalApiKey);
 
   start() {
@@ -133,8 +138,11 @@ export class PumpPortalFeed extends EventEmitter {
         vTokensInBondingCurve: Number(m.vTokensInBondingCurve ?? 0),
         marketCapSol: Number(m.marketCapSol ?? 0),
         pool: String(m.pool ?? 'pump'),
+        mayhem: m.is_mayhem_mode === true,
+        source: 'pumpportal',
         receivedAt: now,
       };
+      this.lastNewTokenAt = now;
       this.emit('newToken', ev);
     } else if (txType === 'buy' || txType === 'sell') {
       const ev: TradeEvent = {

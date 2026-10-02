@@ -28,7 +28,7 @@ describe('computeMetrics', () => {
   it('estimates volume from curve changes and initial buy', () => {
     const t = newTrackedToken({ mint: 'A', source: 'new', createdAt: now - 20 * min, initialBuySol: 1 });
     t.curveVolume.push({ t: now - 15 * min, sol: 2 }, { t: now - 5 * min, sol: 3 });
-    t.curve = { virtualTokenReserves: 1n, virtualSolReserves: 1n, realTokenReserves: 1n, realSolReserves: 5_000_000_000n, tokenTotalSupply: 1n, complete: false };
+    t.curve = { virtualTokenReserves: 1n, virtualSolReserves: 1n, realTokenReserves: 1n, realSolReserves: 5_000_000_000n, tokenTotalSupply: 1n, complete: false, mayhem: false };
     const m = computeMetrics(t, now, SOL_USD, 10);
     expect(m.volumeSource).toBe('curve');
     expect(m.volumeTotalUsd).toBe(600);
@@ -64,5 +64,22 @@ describe('computeMetrics', () => {
     expect(m.volumeTotalUsd).toBeNull();
     expect(m.priceChangePct).toBeNull();
     expect(m.holders).toBeNull();
+  });
+});
+
+describe('mayhem en onCurve in metrics', () => {
+  it('rekent market cap van mayhem-tokens met 2B supply', () => {
+    const t = newTrackedToken({ mint: 'A', source: 'new', createdAt: now - min, mayhem: true });
+    addPrice(t, { t: now, priceSol: 1e-8 });
+    expect(computeMetrics(t, now, SOL_USD, 10).marketCapUsd).toBeCloseTo(1e-8 * 2e9 * SOL_USD, 6);
+  });
+
+  it('onCurve: null zonder curve-data, true op de curve, false na voltooiing', () => {
+    const t = newTrackedToken({ mint: 'A', source: 'new' });
+    expect(computeMetrics(t, now, SOL_USD, 10).onCurve).toBeNull();
+    t.curve = { virtualTokenReserves: 1n, virtualSolReserves: 1n, realTokenReserves: 1n, realSolReserves: 1n, tokenTotalSupply: 1n, complete: false, mayhem: false };
+    expect(computeMetrics(t, now, SOL_USD, 10).onCurve).toBe(true);
+    t.curve = { ...t.curve, complete: true };
+    expect(computeMetrics(t, now, SOL_USD, 10).onCurve).toBe(false);
   });
 });

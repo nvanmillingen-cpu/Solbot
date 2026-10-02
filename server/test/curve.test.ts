@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { curveBuyQuote, curveMarketCapSol, curvePriceSol, curveSellQuote, decodeCurve, type CurveState } from '../src/market/bondingCurve.js';
+import { PublicKey } from '@solana/web3.js';
+import { curveBuyQuote, curveMarketCapSol, curvePriceSol, curveSellQuote, curveSupply, decodeCurve, type CurveState } from '../src/market/bondingCurve.js';
 
 // Startwaarden van een verse pump.fun curve
 const fresh: CurveState = {
@@ -9,6 +10,7 @@ const fresh: CurveState = {
   realSolReserves: 0n,
   tokenTotalSupply: 1_000_000_000_000_000n,
   complete: false,
+  mayhem: false,
 };
 
 describe('bonding curve', () => {
@@ -46,7 +48,36 @@ describe('bonding curve', () => {
       o += 8;
     }
     buf[o] = 1;
-    expect(decodeCurve(buf)).toEqual({ ...fresh, complete: true });
+    expect(decodeCurve(buf)).toMatchObject({ ...fresh, complete: true, mayhem: false });
     expect(decodeCurve(Buffer.alloc(10))).toBeNull();
+  });
+});
+
+describe('curve-layout: creator en mayhem', () => {
+  const creator = new PublicKey('9HsdfT7phLNwTwQvvtXza6ywxodC9dT9MyuKrRLs1d31');
+  const build = (mayhemByte: number, len = 151) => {
+    const buf = Buffer.alloc(len);
+    let o = 8;
+    for (const v of [fresh.virtualTokenReserves, fresh.virtualSolReserves, fresh.realTokenReserves, fresh.realSolReserves, fresh.tokenTotalSupply]) {
+      buf.writeBigUInt64LE(v, o);
+      o += 8;
+    }
+    creator.toBuffer().copy(buf, 49);
+    buf[81] = mayhemByte;
+    return buf;
+  };
+
+  it('leest creator en mayhem-vlag (offset 49 en 81)', () => {
+    const normal = decodeCurve(build(0))!;
+    expect(normal.creator).toBe(creator.toBase58());
+    expect(normal.mayhem).toBe(false);
+    const mayhem = decodeCurve(build(1, 125))!;
+    expect(mayhem.mayhem).toBe(true);
+  });
+
+  it('mayhem-tokens hebben 2 miljard supply, dus 2x market cap', () => {
+    const m = decodeCurve(build(1))!;
+    expect(curveSupply(m)).toBe(2_000_000_000);
+    expect(curveMarketCapSol(m)).toBeCloseTo(2 * curveMarketCapSol(fresh), 6);
   });
 });

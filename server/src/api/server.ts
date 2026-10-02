@@ -12,6 +12,7 @@ import type { TokenTracker } from '../core/tracker.js';
 import type { PumpPortalFeed } from '../feed/pumpportal.js';
 import { logFile, logger, recentLogs } from '../logger.js';
 import { solUsdCached } from '../market/solPrice.js';
+import { top10Status } from '../core/safety.js';
 import type { SettingsStore } from '../settings.js';
 import type { Wallet } from '../wallet.js';
 
@@ -43,7 +44,14 @@ export async function startServer(d: Deps) {
       liveTradingEnabled: config.liveTradingEnabled,
       wallet: d.wallet ? { address: d.wallet.publicKey.toBase58(), sol: d.bot.walletSol } : null,
       solUsd: solUsdCached(),
-      feed: { connected: d.feed.connected, tradesAvailable: d.feed.tradesAvailable, lastMessageAt: d.feed.lastMessageAt },
+      feed: {
+        connected: d.feed.connected,
+        tradesAvailable: d.feed.tradesAvailable,
+        lastMessageAt: d.feed.lastMessageAt,
+        lastNewTokenAt: d.feed.lastNewTokenAt,
+        rpcFallbackActive: d.tracker.rpcFeed.active,
+      },
+      top10: { ...top10Status, required: s.safety.maxTop10Pct.enabled && s.safety.maxTop10Pct.requireData, enabled: s.safety.maxTop10Pct.enabled },
       tracker: { tracked: d.tracker.tokens.size, ...d.tracker.stats },
       blocker: d.bot.running ? d.bot.buyBlocker() : null,
       positions: d.positions.views(),

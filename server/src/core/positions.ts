@@ -40,6 +40,8 @@ export interface PositionRow {
   buy_sig: string | null;
   sell_sig: string | null;
   graduated: number;
+  entry_market_price_sol: number | null;
+  exit_trigger_price_sol: number | null;
 }
 
 export interface OpenPositionView extends PositionRow {
@@ -139,13 +141,13 @@ export class PositionManager {
     }
     // Eerder getriggerde exit die mislukte: opnieuw proberen (failsafe)
     if (r.pending_exit) {
-      if (!r.next_sell_at || now >= r.next_sell_at) void this.sell(r.id, r.pending_exit);
+      if (!r.next_sell_at || now >= r.next_sell_at) void this.sell(r.id, r.pending_exit, price ?? undefined);
       return;
     }
     const reason = evaluateExit({ entryPriceSol: r.entry_price_sol, peakPriceSol: r.peak_price_sol, openedAt: r.opened_at }, price, now, this.settings().exits);
     if (reason) {
       logger.info({ id: r.id, symbol: r.symbol, reason, price, entry: r.entry_price_sol }, 'exit-regel geraakt');
-      void this.sell(r.id, reason);
+      void this.sell(r.id, reason, price ?? undefined);
     }
   }
 
@@ -168,8 +170,8 @@ export class PositionManager {
     const res = this.db
       .prepare(
         `INSERT INTO positions (mint, symbol, name, mode, status, executor, entry_sol, token_amount_raw, decimals, entry_price_sol,
-          opened_at, peak_price_sol, last_price_sol, last_price_at, buy_sig, graduated)
-         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          opened_at, peak_price_sol, last_price_sol, last_price_at, buy_sig, graduated, entry_market_price_sol)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.mint,
@@ -187,7 +189,13 @@ export class PositionManager {
         now,
         p.fill.signature ?? null,
         p.graduated ? 1 : 0,
+        p.fill.marketPriceSol ?? null,
       );
+    if (p.fill.marketPriceSol && entryPrice > 0) {
+      const dev = (entryPrice / p.fill.marketPriceSol - 1) * 100;
+      // Effectieve instapprijs hoort ~1-3% boven de marktprijs te liggen (fees + impact)
+      if (Math.abs(dev) > 15) logger.warn({ mint: p.mint, entryPrice, market: p.fill.marketPriceSol, devPct: dev.toFixed(1) }, 'verdachte fill: instapprijs wijkt sterk af van on-chain prijs');
+    }
     this.tracker.pinned.add(p.mint);
     this.syncSubscriptions();
     return this.get(Number(res.lastInsertRowid))!;
@@ -257,12 +265,13 @@ export class PositionManager {
   }
 
   /** Verkoopt een positie. Bij een fout blijft de positie open met `pending_exit` en wordt het later opnieuw geprobeerd. */
-  async sell(id: number, reason: ExitReason): Promise<boolean> {
+  async sell(id: number, reason: ExitReason, triggerPriceSol?: number): Promise<boolean> {
     if (this.selling.has(id)) return false;
     const r = this.get(id);
     if (!r || r.status === 'closed') return false;
     this.selling.add(id);
-    this.db.prepare("UPDATE positions SET status = 'closing', pending_exit = ? WHERE id = ?").run(reason, id);
+    const trigger = triggerPriceSol ?? r.exit_trigger_price_sol ?? r.last_price_sol ?? null;
+    this.db.prepare("UPDATE positions SET status = 'closing', pending_exit = ?, exit_trigger_price_sol = COALESCE(exit_trigger_price_sol, ?) WHERE id = ?").run(reason, trigger, id);
     const s = this.settings().general;
     try {
       const exec = this.executorFor(r.mode);
@@ -276,6 +285,12 @@ export class PositionManager {
         priorityFeeSol: s.priorityFeeSol,
       });
       const ui = tokensUi(r);
+      const fillPrice = ui > 0 ? fill.solAmount / ui : 0;
+      // Slippage tussen trigger en werkelijke verkoop (bij een dump kan dit groot zijn)
+      const slippagePct = trigger ? (fillPrice / trigger - 1) * 100 : null;
+      if (slippagePct !== null && slippagePct < -15) {
+        logger.warn({ id, symbol: r.symbol, trigger, fillPrice, market: fill.marketPriceSol, slippagePct: slippagePct.toFixed(1) }, 'grote slippage tussen exit-trigger en verkoop');
+      }
       const pnlSol = fill.solAmount - r.entry_sol;
       const pnlPct = r.entry_sol > 0 ? (pnlSol / r.entry_sol) * 100 : 0;
       this.db
@@ -285,7 +300,7 @@ export class PositionManager {
         )
         .run(Date.now(), fill.solAmount, ui > 0 ? fill.solAmount / ui : 0, reason, pnlSol, pnlPct, fill.signature ?? null, id);
       this.tracker.pinned.delete(r.mint);
-      logger.info({ id, symbol: r.symbol, mode: r.mode, reason, pnlSol: +pnlSol.toFixed(5), pnlPct: +pnlPct.toFixed(1), sig: fill.signature }, 'positie gesloten');
+      logger.info({ id, symbol: r.symbol, mode: r.mode, reason, pnlSol: +pnlSol.toFixed(5), pnlPct: +pnlPct.toFixed(1), slippagePct: slippagePct?.toFixed(1), via: fill.executor, sig: fill.signature }, 'positie gesloten');
       return true;
     } catch (e) {
       const attempts = r.sell_attempts + 1;
