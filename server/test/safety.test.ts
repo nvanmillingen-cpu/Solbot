@@ -13,7 +13,7 @@ vi.mock('../src/market/jupiter.js', () => ({
   }),
 }));
 
-const { preBuyChecks, top10FromAccounts, associatedTokenAddress, top10Status } = await import('../src/core/safety.js');
+const { preBuyChecks, top10FromAccounts, associatedTokenAddress, top10Status, probeTop10Support } = await import('../src/core/safety.js');
 const { bondingCurvePda, curvePriceSol } = await import('../src/market/bondingCurve.js');
 const { defaultSettings } = await import('../src/settings.js');
 
@@ -192,5 +192,29 @@ describe('top10FromAccounts', () => {
   it('sanity: curve-prijs van de testbuffer is 3e-8', async () => {
     const { decodeCurve } = await import('../src/market/bondingCurve.js');
     expect(curvePriceSol(decodeCurve(curveBuf())!)).toBeCloseTo(3e-8, 15);
+  });
+});
+
+describe('probeTop10Support (opstarttest)', () => {
+  const conn = (fn: () => unknown) => ({ rpcEndpoint: 'fake', getTokenLargestAccounts: async () => fn() }) as never;
+
+  it('Helius "Too many accounts requested" op USDC telt als ondersteund', async () => {
+    const ok = await probeTop10Support(
+      conn(() => {
+        throw new Error('failed to get token largest accounts: Too many accounts requested (10000000 pubkeys), try adding filters to narrow down results');
+      }),
+    );
+    expect(ok).toBe(true);
+    expect(top10Status.ok).toBe(true);
+  });
+
+  it('publieke RPC (429 op deze methode) telt als niet ondersteund', async () => {
+    const ok = await probeTop10Support(conn(err429));
+    expect(ok).toBe(false);
+    expect(top10Status.ok).toBe(false);
+  });
+
+  it('succesvol antwoord telt als ondersteund', async () => {
+    expect(await probeTop10Support(conn(() => ({ value: [] })))).toBe(true);
   });
 });

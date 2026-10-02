@@ -99,10 +99,38 @@ export async function largestAccounts(conn: Connection, mint: string, attempts =
   return null;
 }
 
-/** Opstarttest: ondersteunt de RPC getTokenLargestAccounts? (test op de USDC-mint) */
+/**
+ * Fout die betekent dat de RPC de methode wél ondersteunt, maar het token te veel holders heeft
+ * (Helius: "Too many accounts requested"). Voor nieuwe pump.fun-tokens speelt dat niet.
+ */
+export function isTooManyAccountsError(msg: string): boolean {
+  return /too many accounts/i.test(msg);
+}
+
+/**
+ * Opstarttest: ondersteunt de RPC getTokenLargestAccounts? Test op de USDC-mint. Een
+ * "too many accounts"-fout (USDC heeft miljoenen holders) telt als ondersteund.
+ */
 export async function probeTop10Support(conn: Connection): Promise<boolean> {
-  const ok = (await largestAccounts(conn, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 2)) !== null;
+  let lastErr = '';
+  for (let i = 0; i < 2; i++) {
+    if (i > 0) await sleep(1000);
+    try {
+      await noRetry(conn).getTokenLargestAccounts(new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'), 'confirmed');
+      lastErr = '';
+      break;
+    } catch (e) {
+      lastErr = String(e instanceof Error ? e.message : e).slice(0, 160);
+      if (isTooManyAccountsError(lastErr)) {
+        lastErr = '';
+        break;
+      }
+    }
+  }
+  const ok = lastErr === '';
+  Object.assign(top10Status, { ok, lastError: lastErr, checkedAt: Date.now() });
   if (ok) logger.info('RPC ondersteunt de top-10-holdercheck');
+  else logger.warn({ err: lastErr }, 'RPC ondersteunt de top-10-holdercheck NIET (gebruik een eigen Helius/QuickNode-RPC)');
   return ok;
 }
 
