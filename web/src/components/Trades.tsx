@@ -12,7 +12,7 @@ const REASONS: Record<string, string> = {
   SELL_ALL: 'Sell all',
 };
 
-export function Trades({ mode, refreshKey }: { mode: string; refreshKey: string }) {
+export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey: string; onReset: (mode: string) => void }) {
   const [rows, setRows] = useState<PositionRow[]>([]);
   const [filterMode, setFilterMode] = useState<string>(mode);
   useEffect(() => setFilterMode(mode), [mode]);
@@ -24,12 +24,24 @@ export function Trades({ mode, refreshKey }: { mode: string; refreshKey: string 
     <section className="card">
       <div className="card-head">
         <h2>Tradehistorie</h2>
+        <div className="head-actions">
+        <button
+          className="btn btn-small"
+          disabled={rows.length === 0}
+          onClick={() => {
+            const label = filterMode === 'all' ? 'paper én live' : filterMode;
+            if (confirm(`Statistieken resetten voor ${label}?\n\nGesloten trades worden gearchiveerd (niet verwijderd) en tellen niet meer mee. Instellingen en open posities blijven staan.`)) onReset(filterMode);
+          }}
+        >
+          Reset statistieken
+        </button>
         <div className="seg" role="group" aria-label="Modus">
           {['paper', 'live', 'all'].map((m) => (
             <button key={m} className={filterMode === m ? 'active' : ''} aria-pressed={filterMode === m} onClick={() => setFilterMode(m)}>
               {m === 'all' ? 'Alles' : m}
             </button>
           ))}
+        </div>
         </div>
       </div>
       {rows.length === 0 ? (

@@ -106,6 +106,13 @@ export async function startServer(d: Deps) {
     return { ok };
   });
 
+  app.post('/api/stats/reset', async (req) => {
+    const mode = modeParam(req.body ?? {});
+    const archived = d.positions.archiveClosed(mode);
+    logger.info({ mode, archived }, 'statistieken gereset (gesloten trades gearchiveerd)');
+    return { ok: true, archived };
+  });
+
   app.get('/api/trades', async (req) => {
     const q = req.query as { limit?: string };
     return d.positions.closed({ mode: modeParam(req.query), limit: Math.min(1000, Number(q.limit ?? 200)) });

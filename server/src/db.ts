@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS positions (
   symbol TEXT,
   name TEXT,
   mode TEXT NOT NULL,              -- 'paper' | 'live'
-  status TEXT NOT NULL,            -- 'open' | 'closing' | 'closed'
+  status TEXT NOT NULL,            -- 'open' | 'closing' | 'closed' | 'archived' (na reset statistieken)
   executor TEXT,
   entry_sol REAL NOT NULL,         -- totaal uitgegeven SOL (incl. fees)
   token_amount_raw TEXT NOT NULL,  -- bigint als string

@@ -160,3 +160,4 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--accent);
   .tile-value { font-size: 20px; }
 }
 .check-row { display: flex; flex-direction: column; gap: 4px; }
+.head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

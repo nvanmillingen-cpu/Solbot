@@ -53,7 +53,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   // Na een sluiting de grafiek/historie verversen
   const closedCount = state?.stats.totalTrades ?? 0;
-  const refreshKey = `${state?.mode}-${closedCount}`;
+  const [resetCount, setResetCount] = useState(0);
+  const refreshKey = `${state?.mode}-${closedCount}-${resetCount}`;
   const errTimer = useRef<number>(undefined);
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -103,7 +104,16 @@ export function App() {
             <StatsTiles state={state} />
             <PnlChart mode={state.mode} refreshKey={refreshKey} />
             <Positions positions={state.positions} max={state.maxOpenPositions} onSell={(id) => run(() => api.post(`/api/positions/${id}/sell`))} />
-            <Trades mode={state.mode} refreshKey={refreshKey} />
+            <Trades
+              mode={state.mode}
+              refreshKey={refreshKey}
+              onReset={(mode) =>
+                run(async () => {
+                  await api.post('/api/stats/reset', { mode });
+                  setResetCount((n) => n + 1);
+                })
+              }
+            />
           </>
         )}
         {tab === 'instellingen' && <SettingsPanel onError={setError} />}

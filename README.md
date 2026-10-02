@@ -75,6 +75,8 @@ Voor paper mode hoef je in `.env` niets in te vullen. De publieke RPC werkt, al 
 
 Statistieken en grafieken tonen standaard de huidige modus (paper of live). In de tradehistorie kun je wisselen.
 
+**Statistieken resetten**: klik in de tradehistorie op **Reset statistieken**. Dit geldt voor de modus die daar geselecteerd is (paper, live of alles). Gesloten trades worden gearchiveerd, niet verwijderd: ze tellen niet meer mee in statistieken en grafieken, maar staan nog in de database. Instellingen en open posities blijven ongewijzigd. Het logbestand leegmaken reset de statistieken niet: die staan in `data/solbot.db`.
+
 ## Van paper naar live
 
 1. **Draai eerst een tijd in paper mode** en kijk of je filters en exit-regels zinnig presteren. Paper-fills gebruiken echte Jupiter-quotes (inclusief fees en price impact), maar in werkelijkheid ben je trager en zijn er meer kapers op de kust. Live presteert vrijwel altijd slechter dan paper.

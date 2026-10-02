@@ -17,7 +17,7 @@ export interface PositionRow {
   symbol: string | null;
   name: string | null;
   mode: 'paper' | 'live';
-  status: 'open' | 'closing' | 'closed';
+  status: 'open' | 'closing' | 'closed' | 'archived';
   executor: string | null;
   entry_sol: number;
   token_amount_raw: string;
@@ -333,6 +333,16 @@ export class PositionManager {
     }
     const sql = `SELECT * FROM positions WHERE ${where.join(' AND ')} ORDER BY closed_at DESC${opts.limit ? ` LIMIT ${Math.floor(opts.limit)}` : ''}`;
     return this.db.prepare(sql).all(...args) as unknown as PositionRow[];
+  }
+
+  /**
+   * Reset statistieken: gesloten trades krijgen status 'archived'. Ze tellen niet meer mee
+   * in statistieken/grafieken, maar blijven bewaard (en voorkomen dubbele aankopen).
+   */
+  archiveClosed(mode: string): number {
+    const sql = mode === 'all' ? "UPDATE positions SET status = 'archived' WHERE status = 'closed'" : "UPDATE positions SET status = 'archived' WHERE status = 'closed' AND mode = ?";
+    const res = mode === 'all' ? this.db.prepare(sql).run() : this.db.prepare(sql).run(mode);
+    return Number(res.changes);
   }
 
   realizedSince(from: number, mode: string): number {
