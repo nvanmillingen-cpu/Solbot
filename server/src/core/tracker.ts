@@ -1,5 +1,6 @@
 import { PublicKey, type Connection } from '@solana/web3.js';
-import { logger } from '../logger.js';
+import { logger, shouldLog } from '../logger.js';
+import { health } from './health.js';
 import type { PumpPortalFeed, NewTokenEvent, TradeEvent, MigrationEvent } from '../feed/pumpportal.js';
 import { RpcLogFeed } from '../feed/rpcLogs.js';
 import { curvePriceSol, fetchCurves } from '../market/bondingCurve.js';
@@ -20,6 +21,8 @@ export class TokenTracker {
   readonly rpcFeed: RpcLogFeed;
   private startedAt = Date.now();
   private curveBusy = false;
+  /** Circuit breaker: bij uitval van de RPC niet elke paar seconden opnieuw proberen. */
+  private curveRetryAt = 0;
   private dexBusy = false;
   private lastHoldersWarn = 0;
   stats = { rpcFeedTokens: 0, newTokens: 0, migrations: 0, curvePolls: 0, dexPolls: 0, lastCurvePollAt: 0, lastDexPollAt: 0, errors: 0 };
@@ -108,14 +111,20 @@ export class TokenTracker {
     this.stats.migrations++;
     const t = this.tokens.get(e.mint);
     if (t) {
-      t.graduated = true;
-      logger.info({ mint: e.mint, symbol: t.symbol }, 'token gegradueerd');
+      this.markGraduated(t, 'migratie');
       return;
     }
     // Gemigreerde tokens ook volgen (voor het filter graduated = ja)
     if (this.settings().filters.graduated === 'no') return;
     this.tokens.set(e.mint, newTrackedToken({ mint: e.mint, source: 'migration', graduated: true, firstSeenAt: e.receivedAt }));
     this.enforceMax();
+  }
+
+  /** Markeert een token als gegradueerd en logt dat één keer (curve-poll en migratie-event melden hetzelfde). */
+  markGraduated(t: TrackedToken, bron: 'curve' | 'migratie' | 'positie') {
+    if (t.graduated) return;
+    t.graduated = true;
+    logger.info({ mint: t.mint, symbol: t.symbol, bron }, 'token gegradueerd');
   }
 
   /** Voeg een token handmatig toe (bijv. voor een open positie na herstart). */
@@ -129,7 +138,7 @@ export class TokenTracker {
   }
 
   async pollCurves() {
-    if (this.curveBusy) return;
+    if (this.curveBusy || Date.now() < this.curveRetryAt) return;
     this.curveBusy = true;
     try {
       const mints = [...this.tokens.values()].filter((t) => !t.graduated).map((t) => t.mint);
@@ -150,17 +159,22 @@ export class TokenTracker {
         if (!t.creator && c.creator) t.creator = c.creator;
         if (!t.launchPriceSol && !t.prices.length) t.launchPriceSol = curvePriceSol(c);
         if (c.complete) {
-          if (!t.graduated) logger.info({ mint, symbol: t.symbol }, 'bonding curve voltooid (graduated)');
-          t.graduated = true;
+          this.markGraduated(t, 'curve');
         } else {
           addPrice(t, { t: now, priceSol: curvePriceSol(c) });
         }
       }
       this.stats.curvePolls++;
       this.stats.lastCurvePollAt = now;
+      this.curveRetryAt = 0;
+      health.ok('curve');
     } catch (e) {
       this.stats.errors++;
-      logger.warn({ err: String(e) }, 'curve-poll mislukt (RPC)');
+      health.fail('curve', e);
+      // Uitgevallen: max. elke 15 s een nieuwe poging; foutmelding max. 1× per minuut
+      if (health.isDown('curve')) this.curveRetryAt = Date.now() + 15_000;
+      const l = shouldLog('curve-poll');
+      if (l.ok) logger.warn({ err: String(e).slice(0, 200), overgeslagen: l.suppressed }, 'curve-poll mislukt (RPC)');
     } finally {
       this.curveBusy = false;
     }
@@ -192,7 +206,8 @@ export class TokenTracker {
       this.stats.lastDexPollAt = now;
     } catch (e) {
       this.stats.errors++;
-      logger.warn({ err: String(e) }, 'DexScreener-poll mislukt');
+      const l = shouldLog('dex-poll');
+      if (l.ok) logger.warn({ err: String(e).slice(0, 200), overgeslagen: l.suppressed }, 'DexScreener-poll mislukt');
     } finally {
       this.dexBusy = false;
     }

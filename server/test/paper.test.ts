@@ -28,17 +28,23 @@ const src = { lastPrice: () => 3e-8, freshCurve: async () => curve };
 const req = { mint: 'M', solAmount: 0.05, slippagePct: 15, priorityFeeSol: 0.0005 };
 
 describe('PaperExecutor', () => {
-  it('buy: neemt de ongunstigste van Jupiter en curve (BANDS: quote 8,7x te gunstig)', async () => {
+  it('buy: geen koop als Jupiter sterk afwijkt (BANDS: quote 8,7x te gunstig)', async () => {
     jup.fail = false;
     jup.tokensPerSol = (1 / 3e-8) * 8.7; // Jupiter belooft 8,7x te veel tokens
-    const fill = await new PaperExecutor(src).buy(req);
-    expect(fill.tokenAmountRaw).toBe(curveBuyQuote(curve, 50_000_000n));
+    await expect(new PaperExecutor(src).buy({ ...req, maxQuoteDeviationPct: 10 })).rejects.toThrow(/prijsbronnen lopen uiteen/);
+  });
+
+  it('buy: fill = curve, ook als Jupiter iets ongunstiger is (198kg: quote 9,9% slechter)', async () => {
+    const curveTokens = curveBuyQuote(curve, 50_000_000n);
+    jup.tokensPerSol = (Number(curveTokens) / 1e6 / 0.05) * 0.91;
+    const fill = await new PaperExecutor(src).buy({ ...req, maxQuoteDeviationPct: 10 });
+    expect(fill.tokenAmountRaw).toBe(curveTokens);
     expect(fill.executor).toBe('paper/curve');
     expect(fill.marketPriceSol).toBeCloseTo(curvePriceSol(curve), 15);
-    // Effectieve instapprijs ligt vlak boven de marktprijs, niet 8,7x eronder
+    // Instapprijs = curveprijs + fees/impact (~2,4%), niet ~10% erboven
     const entry = fill.solAmount / (Number(fill.tokenAmountRaw) / 1e6);
     expect(entry / curvePriceSol(curve)).toBeGreaterThan(1);
-    expect(entry / curvePriceSol(curve)).toBeLessThan(1.05);
+    expect(entry / curvePriceSol(curve)).toBeLessThan(1.03);
   });
 
   it('sell: neemt de laagste opbrengst', async () => {

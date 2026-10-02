@@ -41,11 +41,30 @@ CREATE TABLE IF NOT EXISTS positions (
   sell_sig TEXT,
   graduated INTEGER NOT NULL DEFAULT 0,
   entry_market_price_sol REAL,     -- on-chain prijs bij aankoop (vergelijk met entry_price_sol)
-  exit_trigger_price_sol REAL      -- prijs waarop de exit-regel triggerde (vergelijk met exit_price_sol)
+  exit_trigger_price_sol REAL,     -- prijs waarop de exit-regel triggerde (vergelijk met exit_price_sol)
+  -- Analyse (MFE/MAE): hoogste/laagste prijs tijdens het houden en na de exit
+  peak_price_at INTEGER,
+  min_price_sol REAL,
+  min_price_at INTEGER,
+  post_max_price_sol REAL,
+  post_max_at INTEGER,
+  post_min_price_sol REAL,
+  post_min_at INTEGER,
+  post_graduated INTEGER,          -- 1 = token gegradueerd binnen het venster na de exit
+  post_watch_until INTEGER,        -- tot wanneer de prijs na de exit gevolgd wordt
+  -- Experimenthygiëne
+  config_hash TEXT,                -- hash van de instellingen bij aankoop (zie tabel settings_versions)
+  run_id TEXT                      -- opstart van de bot (= naam van het logbestand)
 );
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(closed_at);
+
+CREATE TABLE IF NOT EXISTS settings_versions (
+  hash TEXT PRIMARY KEY,
+  json TEXT NOT NULL,
+  first_used_at INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
@@ -63,6 +82,21 @@ export function openDb(file: string): Db {
   const cols = new Set((db.prepare('PRAGMA table_info(positions)').all() as { name: string }[]).map((c) => c.name));
   if (!cols.has('entry_market_price_sol')) db.exec('ALTER TABLE positions ADD COLUMN entry_market_price_sol REAL');
   if (!cols.has('exit_trigger_price_sol')) db.exec('ALTER TABLE positions ADD COLUMN exit_trigger_price_sol REAL');
+  const added: [string, string][] = [
+    ['peak_price_at', 'INTEGER'],
+    ['min_price_sol', 'REAL'],
+    ['min_price_at', 'INTEGER'],
+    ['post_max_price_sol', 'REAL'],
+    ['post_max_at', 'INTEGER'],
+    ['post_min_price_sol', 'REAL'],
+    ['post_min_at', 'INTEGER'],
+    ['post_graduated', 'INTEGER'],
+    ['post_watch_until', 'INTEGER'],
+    ['config_hash', 'TEXT'],
+    ['run_id', 'TEXT'],
+  ];
+  for (const [name, type] of added) if (!cols.has(name)) db.exec(`ALTER TABLE positions ADD COLUMN ${name} ${type}`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_positions_watch ON positions(post_watch_until)');
   return db;
 }
 

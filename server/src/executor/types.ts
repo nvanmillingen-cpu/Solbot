@@ -3,6 +3,8 @@ export interface BuyRequest {
   solAmount: number;
   slippagePct: number;
   priorityFeeSol: number;
+  /** Paper: max. afwijking Jupiter-quote vs curve; daarboven wordt de koop afgebroken. */
+  maxQuoteDeviationPct?: number;
 }
 
 export interface SellRequest {

@@ -25,6 +25,11 @@ export function Header({ state, connected, onStart, onStop, onSellAll, onToggleM
         <span className={`status ${state?.running ? 'on' : 'off'}`}>
           <span className="status-dot" aria-hidden />
           {state?.running ? 'Actief' : 'Gestopt'}
+          {state?.running && state.runningSince && (
+            <span className="run-timer mono" title={`Gestart op ${new Date(state.runningSince).toLocaleString('nl-NL')}`}>
+              {fmt.elapsed(state.now - state.runningSince)}
+            </span>
+          )}
         </span>
       </div>
 
@@ -35,6 +40,11 @@ export function Header({ state, connected, onStart, onStop, onSellAll, onToggleM
           {state?.feed.rpcFallbackActive ? ' + RPC-fallback' : ''}
         </span>
         <span>Gevolgd: {state?.tracker.tracked ?? '–'} tokens</span>
+        {state && (
+          <span title={`Hash van de huidige instellingen. Vergelijk resultaten pas na ~200–300 trades met dezelfde instellingen. Run: ${state.run.id}`}>
+            Config <span className="mono">{state.config.hash}</span>: {state.config.trades}/200 trades
+          </span>
+        )}
         <span>SOL ${state?.solUsd ? state.solUsd.toFixed(2) : '–'}</span>
         {state?.wallet && (
           <span title={state.wallet.address}>
@@ -69,6 +79,11 @@ export function Header({ state, connected, onStart, onStop, onSellAll, onToggleM
         </button>
       </div>
       {state?.blocker && <div className="blocker">Kopen gepauzeerd: {state.blocker}</div>}
+      {state && state.health.lastStallAt > 0 && state.now - state.health.lastStallAt < 30 * 60_000 && (
+        <div className="blocker">
+          De bot heeft {Math.round(state.health.lastStallMs / 60_000)} min stilgestaan (slaapstand of bevroren pc?). In die tijd werden posities niet bewaakt.
+        </div>
+      )}
       {state?.top10.enabled && state.top10.ok === false && (
         <div className="blocker">
           Top-10-holdercheck werkt niet met deze RPC

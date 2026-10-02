@@ -3,6 +3,8 @@ import { api, fmt, signClass } from '../api';
 import type { PositionRow } from '../types';
 import { TokenCell } from './Positions';
 
+const pctOf = (p: number | null, ref: number | null) => (p !== null && ref ? fmt.pct((p / ref - 1) * 100) : '–');
+
 const REASONS: Record<string, string> = {
   SL: 'Stop-loss',
   TP: 'Take-profit',
@@ -25,6 +27,9 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
       <div className="card-head">
         <h2>Tradehistorie</h2>
         <div className="head-actions">
+        <a className="btn btn-small" href="/api/trades.csv" download title="Alle trades (ook gearchiveerd) met MFE/MAE, config-hash en run-id, voor Excel">
+          Download CSV
+        </a>
         <button
           className="btn btn-small"
           disabled={rows.length === 0}
@@ -61,6 +66,9 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
                 <th className="num">Duur</th>
                 <th>Reden</th>
                 <th className="num" title="Verkoopprijs t.o.v. de prijs waarop de exit-regel triggerde">Slippage exit</th>
+                <th className="num" title="Hoogste / laagste prijs tijdens het houden, t.o.v. de instapprijs (MFE / MAE)">Max / min</th>
+                <th className="num" title="Hoogste prijs ná de exit (volgvenster), t.o.v. de exitprijs. 🎓 = token gegradueerd na de exit">Na exit</th>
+                <th title="Config-hash van de instellingen bij aankoop">Config</th>
                 <th>Tx</th>
               </tr>
             </thead>
@@ -83,6 +91,14 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
                   <td className={`num ${r.exit_trigger_price_sol && r.exit_price_sol ? signClass(r.exit_price_sol / r.exit_trigger_price_sol - 1) : ''}`}>
                     {r.exit_trigger_price_sol && r.exit_price_sol ? fmt.pct((r.exit_price_sol / r.exit_trigger_price_sol - 1) * 100) : '–'}
                   </td>
+                  <td className="num">
+                    <span className="pos">{pctOf(r.peak_price_sol, r.entry_price_sol)}</span> / <span className="neg">{pctOf(r.min_price_sol, r.entry_price_sol)}</span>
+                  </td>
+                  <td className="num" title={r.post_watch_until && r.post_watch_until > Date.now() ? 'wordt nog gevolgd' : ''}>
+                    {pctOf(r.post_max_price_sol, r.exit_price_sol)}
+                    {r.post_graduated ? ' 🎓' : ''}
+                  </td>
+                  <td className="mono muted">{r.config_hash ?? '–'}</td>
                   <td>
                     {r.sell_sig ? (
                       <a href={`https://solscan.io/tx/${r.sell_sig}`} target="_blank" rel="noreferrer">

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from './db.js';
 
@@ -16,6 +17,17 @@ export const settingsSchema = z.object({
       slippagePct: z.number().min(0.1).max(99).default(15),
       priorityFeeSol: pos.max(0.1).default(0.0005),
       maxTxRetries: z.number().int().min(0).max(10).default(2),
+      /** Windows: voorkom slaapstand zolang de bot draait (anders geen stop-loss-bewaking). */
+      preventSleep: z.boolean().default(true),
+    })
+    .prefault({}),
+  /** Paper-simulatie: kosten en vertraging die live wél optreden. */
+  paper: z
+    .object({
+      /** Tijd tussen besluit en landing van de transactie; de fill gebruikt de prijs ná deze vertraging. */
+      latencyMs: z.number().int().min(0).max(10_000).default(1500),
+      /** Extra kosten per transactie bovenop de priority fee (Jito-tip / landingskosten). */
+      landingFeeSol: pos.max(0.1).default(0.001),
     })
     .prefault({}),
   risk: z
@@ -52,7 +64,16 @@ export const settingsSchema = z.object({
     .prefault({}),
   exits: z
     .object({
-      stopLoss: toggle({ pct: z.number().positive().max(100).default(20) }, true).prefault({}),
+      stopLoss: toggle(
+        {
+          pct: z.number().positive().max(100).default(20),
+          /** Eerste seconden na aankoop: geen gewone stop-loss (ruis/fill-afwijking), alleen de noodstop. 0 = uit. */
+          graceSec: pos.max(120).default(3),
+          /** Noodstop binnen de grace period: verkoop toch bij dit verlies. */
+          graceMaxLossPct: z.number().positive().max(100).default(35),
+        },
+        true,
+      ).prefault({}),
       takeProfit: toggle({ pct: z.number().positive().default(50) }, true).prefault({}),
       maxHold: toggle({ minutes: z.number().positive().default(15) }, true).prefault({}),
       trailingStop: toggle(
@@ -102,6 +123,8 @@ export const settingsSchema = z.object({
       /** Pollinterval voor prijzen van open posities (seconden). */
       positionPollSec: z.number().min(1).max(60).default(1),
       maxTrackedTokens: z.number().int().min(10).max(5000).default(800),
+      /** Na een exit de prijs nog zo lang volgen (hoogste/laagste prijs, graduation) voor analyse. 0 = uit. */
+      postExitWatchMin: pos.max(240).default(15),
     })
     .prefault({}),
 });
@@ -120,6 +143,15 @@ function deepMerge(base: unknown, patch: unknown): unknown {
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [k, v] of Object.entries(patch as Record<string, unknown>)) out[k] = deepMerge(out[k], v);
   return out;
+}
+
+/**
+ * Korte hash van de instellingen die het handelsgedrag bepalen. Elke trade krijgt de hash
+ * mee, zodat je achteraf alleen trades met dezelfde instellingen vergelijkt.
+ */
+export function configHash(s: Settings): string {
+  const { preventSleep: _ignored, ...general } = s.general;
+  return createHash('sha256').update(JSON.stringify({ ...s, general })).digest('hex').slice(0, 8);
 }
 
 type Listener = (s: Settings) => void;
@@ -144,6 +176,17 @@ export class SettingsStore {
     return this.current;
   }
 
+  /** Alle opgeslagen instellingenversies, nieuwste eerst. */
+  versions(): { hash: string; first_used_at: number; settings: unknown }[] {
+    const rows = this.db.prepare('SELECT hash, json, first_used_at FROM settings_versions ORDER BY first_used_at DESC').all() as { hash: string; json: string; first_used_at: number }[];
+    return rows.map((r) => ({ hash: r.hash, first_used_at: r.first_used_at, settings: JSON.parse(r.json) }));
+  }
+
+  /** Hash van de huidige instellingen (zie `configHash`). */
+  hash(): string {
+    return configHash(this.current);
+  }
+
   /** Valideert en slaat op; gooit een ZodError bij ongeldige waarden. */
   update(patch: unknown): Settings {
     const next = settingsSchema.parse(deepMerge(this.current, patch));
@@ -161,5 +204,7 @@ export class SettingsStore {
     this.db
       .prepare('INSERT INTO settings (id, json, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at')
       .run(JSON.stringify(this.current), Date.now());
+    // Elke versie bewaren, zodat een config-hash bij een trade altijd terug te zoeken is
+    this.db.prepare('INSERT OR IGNORE INTO settings_versions (hash, json, first_used_at) VALUES (?, ?, ?)').run(this.hash(), JSON.stringify(this.current), Date.now());
   }
 }

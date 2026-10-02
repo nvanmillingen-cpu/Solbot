@@ -9,11 +9,16 @@ import type { TradeStats } from '../../server/src/core/stats';
 export interface BotState {
   now: number;
   running: boolean;
+  /** Sinds wanneer de bot aan staat (null = gestopt). */
+  runningSince: number | null;
+  run: { id: string; startedAt: number; logFile: string };
+  config: { hash: string; trades: number };
+  health: { down: string[]; lastStallMs: number; lastStallAt: number };
   mode: 'paper' | 'live';
   liveTradingEnabled: boolean;
   wallet: { address: string; sol: number | null } | null;
   solUsd: number;
-  feed: { connected: boolean; tradesAvailable: boolean; lastMessageAt: number; lastNewTokenAt: number; rpcFallbackActive: boolean };
+  feed: { connected: boolean; tradesAvailable: boolean; lastMessageAt: number; lastNewTokenAt: number; rpcFallbackActive: boolean; lastDataAt: number; reconnects: number };
   top10: { ok: boolean | null; lastError: string; checkedAt: number; required: boolean; enabled: boolean };
   tracker: { tracked: number; newTokens: number; migrations: number; curvePolls: number; dexPolls: number; errors: number };
   blocker: string | null;

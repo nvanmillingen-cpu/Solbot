@@ -61,6 +61,8 @@ npm start
 
 Open daarna **http://localhost:3000** in je browser.
 
+**Makkelijker op Windows**: dubbelklik op **`Solbot starten.bat`** in de projectmap. Dat bouwt het dashboard, start de bot en opent de browser zodra het dashboard bereikbaar is. Crasht de bot onverwacht, dan start het venster hem na 10 seconden opnieuw. Sluit het venster om de bot te stoppen.
+
 Voor paper mode hoef je in `.env` niets in te vullen. De publieke RPC werkt, al is een gratis Helius- of QuickNode-RPC sneller en betrouwbaarder (zie [RPC](#rpc)).
 
 ## Gebruik
@@ -71,7 +73,8 @@ Voor paper mode hoef je in `.env` niets in te vullen. De publieke RPC werkt, al 
 - **Tabblad Overzicht**: statistieken, P&L-grafiek (24 uur, 7 dagen, all-time), open posities met live P&L en de tradehistorie met de reden van verkoop.
 - **Tabblad Instellingen**: alle filters, exit-regels, risico- en uitvoeringsinstellingen. Klik op **Toepassen** om op te slaan. Wijzigingen gelden direct, zonder herstart.
 - **Tabblad Kandidaten**: de gevolgde tokens met hun metingen en per filter of ze voldoen. Handig om je filters af te stellen.
-- **Tabblad Log**: de laatste logregels. Het volledige logbestand staat in `logs/solbot-JJJJ-MM-DD.log`.
+- **Tabblad Log**: de laatste logregels. **Elke opstart krijgt een eigen logbestand**: `logs/solbot_JJJJ-MM-DD_UU-MM-SS.log` (lokale tijd van de start). Elke regel heeft naast `time` (epoch) ook een leesbaar veld `tijd`, bijvoorbeeld `2026-10-02 14:35:07.123`.
+- **Run-timer**: naast "Actief" bovenin staat hoelang de bot al aan staat.
 
 Statistieken en grafieken tonen standaard de huidige modus (paper of live). In de tradehistorie kun je wisselen.
 
@@ -116,7 +119,7 @@ Een token wordt alleen gekocht als het aan **alle** ingeschakelde filters voldoe
 
 | Regel | Betekenis |
 |---|---|
-| Stop-loss | Verkoop als de P&L ≤ −X%. |
+| Stop-loss | Verkoop als de P&L ≤ −X%. **Grace period** (standaard 3 s): direct na de aankoop vuurt alleen de **noodstop** (standaard −35%), zodat ruis in de eerste seconden geen stop-loss geeft. Grace 0 = uit. |
 | Take-profit | Verkoop als de P&L ≥ +X%. |
 | Max. houdtijd | Verkoop na X minuten, ongeacht de prijs. |
 | Trailing stop | Verkoop als de prijs X% onder de hoogste prijs sinds aankoop zakt. De trailing stop wordt pas **actief** zodra de winst de activatiedrempel haalt (standaard 20%). Zo raakt normale ruis vlak na de koop hem niet meer, en eindigt een trail-exit na activatie boven de instapprijs. Activatie 0 = direct vanaf aankoop. |
@@ -137,7 +140,7 @@ Er wordt geen betaalde dienst gebruikt. Alle bronnen zijn gratis, maar wel onoff
 
 | Bron | Gebruikt voor | Beperkingen |
 |---|---|---|
-| **PumpPortal websocket** (`wss://pumpportal.fun/api/data`) | Nieuwe tokens, migraties | Gratis voor nieuwe tokens en migraties. **Per-token trades (`subscribeTokenTrade`) vereisen sinds kort een API-sleutel** van een wallet met ≥ 0,02 SOL bij PumpPortal. Zonder sleutel schat de bot het volume zelf (zie hieronder). Verbreekt soms de verbinding: de bot verbindt automatisch opnieuw met backoff. **Valt PumpPortal 60 seconden stil, dan schakelt de bot automatisch over op de RPC-fallbackfeed** (zie hieronder). |
+| **PumpPortal websocket** (`wss://pumpportal.fun/api/data`) | Nieuwe tokens, migraties | Gratis voor nieuwe tokens en migraties. **Per-token trades (`subscribeTokenTrade`) vereisen sinds kort een API-sleutel** van een wallet met ≥ 0,02 SOL bij PumpPortal. Zonder sleutel schat de bot het volume zelf (zie hieronder). Verbreekt soms de verbinding of stuurt een tijd niets: de bot verbindt automatisch opnieuw met backoff (zie [Robuustheid](#robuustheid)). **Valt PumpPortal 60 seconden stil, dan schakelt de bot automatisch over op de RPC-fallbackfeed** (zie hieronder). |
 | **Solana RPC: programmalogs** (`logsSubscribe` op het pump.fun-programma) | Fallback voor nieuwe tokens | Gratis. De bot decodeert het pump.fun `CreateEvent` (mint, naam, maker, eerste aankoop) rechtstreeks uit de logs. Werkt ook op de publieke RPC, maar levert veel dataverkeer. In het dashboard staat dan "+ RPC-fallback" achter de feedstatus. |
 | **Solana RPC**: bonding-curve-account | Exacte prijs, market cap, liquiditeit en status (graduated) van tokens op de curve | Dit is de meest betrouwbare bron. De publieke RPC (`api.mainnet-beta.solana.com`) is streng gelimiteerd. Bij honderden gevolgde tokens raad ik een gratis Helius- of QuickNode-sleutel aan. Er worden max. 100 accounts per call opgehaald. |
 | **DexScreener API** (`/tokens/v1/solana/...`) | Volume (5m/1u/24u), prijsverandering, liquiditeit en prijs van graduated tokens | Gratis, 300 requests/min (de bot gebruikt max. 200/min, 30 tokens per call). **Indexeert brand-nieuwe tokens pas na wat handel**, vaak na enkele minuten. Geeft geen 10-minutenvolume: de bot berekent dat uit het verschil tussen 24u-volume-snapshots. |
@@ -171,7 +174,7 @@ De uitvoering is een uitwisselbare **executor-laag** (`server/src/executor/`):
 
 | Executor | Wanneer | Details |
 |---|---|---|
-| `PaperExecutor` | Paper mode | Vult tegen een **echte Jupiter-quote** (inclusief alle fees, slippage en price impact) plus de priority fee. Fallback: bonding-curve-wiskunde, daarna de laatste prijs. |
+| `PaperExecutor` | Paper mode | Vult op de bonding curve met de **exacte curve-wiskunde** (inclusief 1,25% curve-fee en price impact) plus priority fee en landingskosten. Graduated tokens: Jupiter-quote. Fallback: de laatste prijs. |
 | `JupiterBuilder` | Live (standaard) | **Jupiter routeert ook tokens op de pump.fun bonding curve** (route-label "Pump.fun"), dus één executor dekt zowel bonding curve als graduated (PumpSwap/Raydium). Geen extra fee. |
 | `PumpPortalBuilder` | Live (fallback of als voorkeur) | PumpPortal local-transaction API: PumpPortal bouwt de transactie en de bot tekent lokaal (je sleutel verlaat je computer niet). **PumpPortal rekent 0,5% fee per trade.** `pool: auto` kiest zelf curve of PumpSwap. |
 
@@ -185,9 +188,29 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
 
 **Slippage zichtbaar**: per trade slaat de bot de on-chain marktprijs bij aankoop op, en de prijs waarop de exit-regel triggerde. In de tradehistorie zie je in de kolom *Slippage exit* hoeveel de werkelijke verkoop daarvan afweek. Wijkt een fill meer dan 15% af, dan komt er een waarschuwing in de log.
 
-**Paper-fills** voor tokens op de bonding curve worden berekend met zowel de Jupiter-quote als de exacte pump.fun-curvewiskunde op een verse on-chain stand. De **ongunstigste** van de twee telt, zodat paper mode niet te optimistisch is.
+**Paper-fills** voor tokens op de bonding curve:
+- **Koop**: de fill is de exacte pump.fun-curvewiskunde. Dat is ook wat een echte Jupiter-swap on-chain uitvoert, en de exit-bewaking kijkt naar dezelfde curve. Zo zijn instapprijs en bewaking één prijsbron. Vroeger telde de ongunstigste van Jupiter en curve. Omdat de Jupiter-quote bij snelle bewegingen achterloopt (afwijkingen van ±10–12% gemeten), lag de instap dan soms 10% boven de curve en vuurde de stop-loss binnen een seconde zonder echte koersdaling (198kg). De Jupiter-quote is nu alleen nog een controle: wijkt die meer af dan *Max. afwijking quote vs on-chain prijs*, dan gaat de koop niet door.
+- **Verkoop**: de ongunstigste van curve en Jupiter (conservatief).
+- **Paper-simulatie** (tabblad Instellingen → Uitvoering): de fill gebruikt de curvestand **ná een landingsvertraging** (standaard 1500 ms), zoals een echte transactie die pas later in een blok komt. Daarnaast komen er **landingskosten per transactie** bij (Jito-tip, standaard 0,001 SOL), bovenop de priority fee. Zonder deze twee is paper te mild: kleine trailing-winsten van +1% tot +5% zijn live meestal verlies. De kolom *instap_vs_markt_pct* in de CSV laat zien hoeveel duurder de instap was dan de marktprijs op het moment van besluiten.
 
 **Sell-failsafe**: mislukt een verkoop helemaal, dan blijft de positie open met de getriggerde exit-reden. De monitor probeert het opnieuw met oplopende wachttijd (5 s tot 60 s) en elke keer +5% slippage (max. 50%), ook als de prijs intussen herstelt. In het dashboard zie je dan "verkoop mislukt (n×)".
+
+**Closing-lock**: een positie gaat in één database-stap van *open* naar *closing*. Alleen de aanroep die dat lukt, mag verkopen. Komen er twee exit-triggers tegelijk binnen (websocket en poll, zoals bij inumas twee keer binnen 190 ms), dan wordt er maar één keer verkocht.
+
+## Analyse en experimenthygiëne
+
+- **MFE/MAE per trade**: de bot slaat de hoogste en laagste prijs **tijdens** het houden op (met tijdstip). Na de exit volgt hij de prijs nog **15 minuten** (*Prijs na exit volgen*, tabblad Instellingen → Datafeed). Hij slaat dan de hoogste en laagste prijs na de exit op, en of het token in die tijd gegradueerd is. Aan het eind van het venster komt er een regel `na-exit analyse (MFE/MAE)` in de log. In de tradehistorie zie je de kolommen *Max / min* en *Na exit* (🎓 = gegradueerd na de exit).
+- **Config-hash**: elke trade krijgt een korte hash van de instellingen bij aankoop (`config_hash`), plus het run-id van de opstart (`run_id`). Elke instellingenversie wordt bewaard (tabel `settings_versions`, of `GET /api/settings/versions`). Bovenin het dashboard staat de huidige hash en hoeveel trades er met deze instellingen zijn ("x/200"). Vergelijk instellingen pas na **200–300 trades** met dezelfde hash. Wijzig je de instellingen terwijl de bot draait, dan komt dat als waarschuwing in de log.
+- **CSV-export**: knop **Download CSV** in de tradehistorie (of `GET /api/trades.csv`). Je krijgt alle trades, ook gearchiveerde, met afgeleide kolommen in %: instap vs. markt, exit-slippage, max/min tijdens het houden, max/min na de exit en gegradueerd na de exit. Het bestand opent direct in Excel.
+
+## Robuustheid
+
+- **Netwerkuitval**: mislukken de SOL-prijs, de curve-poll of de prijzen van open posities meerdere keren achter elkaar (en minstens 15 s lang), dan geldt die feed als **uitgevallen**. Er wordt dan niets gekocht, open posities krijgen in het dashboard het label **⚠ onbewaakt**, en er komt één foutmelding in de log, gevolgd door één melding bij herstel. Herhalende fouten worden maximaal één keer per minuut gelogd, met het aantal overgeslagen meldingen. Bij uitval van de RPC probeert de curve-poll het elke 15 s opnieuw in plaats van elke paar seconden.
+- **SOL-prijs** ouder dan 5 minuten: niet kopen, want de USD-filters (mcap, volume) zijn dan onbetrouwbaar.
+- **PumpPortal**: de bot pingt elke 15 s. Een pong betekent dat de verbinding leeft. Leeft de verbinding maar komt er 90 s geen data, dan verbindt hij opnieuw met een oplopende pauze (30 s, 1, 2, 4 tot 5 min) in plaats van elke ~75 s. Na elke (re)connect worden alle subscriptions opnieuw aangevraagd. De RPC-fallbackfeed levert intussen de nieuwe tokens.
+- **Slaapstand**: zolang de bot draait vraagt hij Windows om niet in slaapstand te gaan (*Slaapstand voorkomen*, standaard aan). Dat houdt het dichtklappen van een laptop of handmatig "Slaapstand" niet tegen. Heeft het proces toch stilgestaan (gat van meer dan 30 s in de hartslag), dan staat dat als fout in de log en als waarschuwing in het dashboard.
+- **Crashdetectie**: bij het opstarten controleert de bot of de vorige run netjes is afgesloten. Zo niet (crash, slaapstand of pc uit), dan komt er een foutmelding in de log met de laatste hartslag en het aantal open posities. In die tijd was er **geen stop-loss-bewaking**.
+- **Advies voor live**: draai de bot op een pc die niet slaapt, of beter op een VPS. Gebruik `Solbot starten.bat`, die de bot na een crash herstart. Een echte on-chain stop-loss bestaat niet voor pump.fun-tokens: de bewaking werkt alleen zolang de bot draait.
 
 ## Veiligheid
 
@@ -201,7 +224,7 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
   - **Max. bezit top-10 holders** (standaard 35%, zonder bonding curve of pool): vangt snipers en bundels. **Vereist een eigen RPC** (Helius of QuickNode, gratis tier). De publieke Solana-RPC en andere gratis publieke endpoints weigeren `getTokenLargestAccounts`.
     - Bij een tijdelijke fout (429) probeert de bot het tot 3 keer.
     - Lukt het niet, dan **koopt de bot niet** (instelling *Niet kopen als top-10 onbekend is*, standaard aan).
-    - Bij het opstarten test de bot of de RPC deze data levert. Staat in de log "RPC ondersteunt de top-10-holdercheck", dan is het goed. Werkt het niet, dan staat er een rode melding in het dashboard.
+    - Bij het opstarten test de bot of de RPC deze data levert. Staat in de log "RPC ondersteunt de top-10-holdercheck", dan is het goed. Werkt het niet, dan staat er een rode melding in het dashboard. Zolang de test faalt, **koopt de bot helemaal niets** (fail-closed). Hij test het elke minuut opnieuw.
   - **Prijscontrole vlak vóór aankoop**: de bot haalt de curve opnieuw on-chain op. Hij koopt niet als de prijs sinds de filterevaluatie meer dan 25% veranderde, of als de koop-quote meer dan 10% afwijkt van de on-chain prijs (bescherming tegen foute fills).
 - Afgekeurde tokens krijgen een cooldown. Bij authority-problemen worden ze permanent overgeslagen.
 - Het dashboard luistert standaard alleen op `127.0.0.1` en heeft **geen login**. Stel `HOST` niet open naar internet.
@@ -251,6 +274,8 @@ web/                    React + Vite + Recharts dashboard
 | GET | `/api/stats?range=24h\|7d\|all&mode=` | statistieken |
 | GET | `/api/pnl?range=24h\|7d\|all&mode=` | cumulatieve P&L-reeks |
 | GET | `/api/candidates` | gevolgde tokens + filterresultaten |
+| GET | `/api/trades.csv` | alle trades als CSV (MFE/MAE, config-hash, run-id) |
+| GET | `/api/settings/versions` | alle opgeslagen instellingenversies per config-hash |
 | WS | `/ws` | live state elke seconde |
 
 ## Testen en ontwikkelen

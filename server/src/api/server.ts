@@ -10,7 +10,8 @@ import type { PositionManager } from '../core/positions.js';
 import { computeStats, pnlSeries, rangeStart } from '../core/stats.js';
 import type { TokenTracker } from '../core/tracker.js';
 import type { PumpPortalFeed } from '../feed/pumpportal.js';
-import { logFile, logger, recentLogs } from '../logger.js';
+import { health } from '../core/health.js';
+import { logFile, logger, recentLogs, runId, runStartedAt, stamp } from '../logger.js';
 import { solUsdCached } from '../market/solPrice.js';
 import { top10Status } from '../core/safety.js';
 import type { SettingsStore } from '../settings.js';
@@ -37,9 +38,14 @@ export async function startServer(d: Deps) {
   function state() {
     const s = d.store.get();
     const closedAll = d.positions.closed({ mode: d.bot.mode });
+    const hash = d.store.hash();
     return {
       now: Date.now(),
       running: d.bot.running,
+      runningSince: d.bot.startedAt,
+      run: { id: runId, startedAt: runStartedAt, logFile },
+      config: { hash, trades: d.positions.countWithConfig(hash, d.bot.mode) },
+      health: health.view(),
       mode: d.bot.mode,
       liveTradingEnabled: config.liveTradingEnabled,
       wallet: d.wallet ? { address: d.wallet.publicKey.toBase58(), sol: d.bot.walletSol } : null,
@@ -50,6 +56,8 @@ export async function startServer(d: Deps) {
         lastMessageAt: d.feed.lastMessageAt,
         lastNewTokenAt: d.feed.lastNewTokenAt,
         rpcFallbackActive: d.tracker.rpcFeed.active,
+        lastDataAt: d.feed.lastDataAt,
+        reconnects: d.feed.reconnects,
       },
       top10: { ...top10Status, required: s.safety.maxTop10Pct.enabled && s.safety.maxTop10Pct.requireData, enabled: s.safety.maxTop10Pct.enabled },
       tracker: { tracked: d.tracker.tokens.size, ...d.tracker.stats },
@@ -141,6 +149,25 @@ export async function startServer(d: Deps) {
       from,
     );
   });
+
+  /** Alle trades (ook gearchiveerd) als CSV, voor analyse in Excel: MFE/MAE, config-hash en run-id per trade. */
+  app.get('/api/trades.csv', async (_req, reply) => {
+    const rows = d.positions.allForExport();
+    const cols = rows.length ? Object.keys(rows[0]) : ['id'];
+    const esc = (v: unknown) => {
+      if (v === null || v === undefined) return '';
+      const t = String(v);
+      return /[",;\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc((r as Record<string, unknown>)[c])).join(','))].join('\r\n');
+    return reply
+      .header('content-type', 'text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="solbot-trades_${stamp()}.csv"`)
+      .send('﻿' + csv); // BOM: Excel herkent dan UTF-8
+  });
+
+  /** Alle opgeslagen instellingenversies (config-hash → instellingen). */
+  app.get('/api/settings/versions', async () => d.store.versions());
 
   app.get('/api/candidates', async () => d.bot.lastCandidates);
   app.get('/api/logs', async () => ({ file: logFile, lines: recentLogs(300) }));

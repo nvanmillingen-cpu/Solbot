@@ -21,11 +21,16 @@ export interface ExitInput {
 /**
  * Pure exit-check. Volgorde bij meerdere treffers: SL, TRAIL, TP, TIME.
  * `priceSol` mag null zijn (geen prijs): dan kan alleen TIME triggeren.
+ * Binnen de grace period na aankoop vuurt de stop-loss alleen bij een harde daling (noodstop).
  */
 export function evaluateExit(p: ExitInput, priceSol: number | null, now: number, exits: Settings['exits']): ExitReason | null {
   if (priceSol !== null && priceSol > 0 && p.entryPriceSol > 0) {
     const pnlPct = (priceSol / p.entryPriceSol - 1) * 100;
-    if (exits.stopLoss.enabled && pnlPct <= -exits.stopLoss.pct) return 'SL';
+    if (exits.stopLoss.enabled) {
+      const inGrace = now - p.openedAt < exits.stopLoss.graceSec * 1000;
+      const slPct = inGrace ? Math.max(exits.stopLoss.pct, exits.stopLoss.graceMaxLossPct) : exits.stopLoss.pct;
+      if (pnlPct <= -slPct) return 'SL';
+    }
     if (exits.trailingStop.enabled) {
       const peak = Math.max(p.peakPriceSol, p.entryPriceSol, priceSol);
       // Pas actief zodra de piek de activatiedrempel boven de instapprijs heeft gehaald

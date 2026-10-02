@@ -5,7 +5,7 @@ import { defaultSettings } from '../src/settings.js';
 const exits = () => {
   const e = defaultSettings().exits;
   // Vaste waarden zodat de tests niet afhangen van de standaardinstellingen
-  e.stopLoss = { enabled: true, pct: 25 };
+  e.stopLoss = { enabled: true, pct: 25, graceSec: 0, graceMaxLossPct: 35 };
   e.takeProfit = { enabled: true, pct: 60 };
   e.maxHold = { enabled: true, minutes: 20 };
   e.trailingStop = { enabled: false, pct: 20, activatePct: 0 };
@@ -93,5 +93,33 @@ describe('trailing stop met activatiedrempel', () => {
 
   it('stop-loss blijft werken als de trail nog niet actief is', () => {
     expect(evaluateExit({ ...pos, peakPriceSol: 1.05 }, 0.7, now, e())).toBe('SL');
+  });
+});
+
+describe('stop-loss grace period (SL binnen ~1 s na koop)', () => {
+  const e = () => {
+    const x = exits();
+    x.stopLoss = { enabled: true, pct: 15, graceSec: 3, graceMaxLossPct: 35 };
+    return x;
+  };
+  const fresh = { entryPriceSol: 1, peakPriceSol: 1, openedAt: now - 500 };
+
+  it('geen gewone SL in de eerste seconden (si.gov/CLIPPY: -16% na 0,5 s)', () => {
+    expect(evaluateExit(fresh, 0.84, now, e())).toBeNull();
+  });
+
+  it('noodstop vuurt wel binnen de grace period', () => {
+    expect(evaluateExit(fresh, 0.65, now, e())).toBe('SL');
+  });
+
+  it('na de grace period geldt de normale SL weer', () => {
+    expect(evaluateExit({ ...fresh, openedAt: now - 3000 }, 0.84, now, e())).toBe('SL');
+  });
+
+  it('noodstop nooit soepeler dan de gewone SL', () => {
+    const x = e();
+    x.stopLoss.graceMaxLossPct = 10; // lager dan SL 15%: dan geldt 15%
+    expect(evaluateExit(fresh, 0.88, now, x)).toBeNull();
+    expect(evaluateExit(fresh, 0.85, now, x)).toBe('SL');
   });
 });

@@ -182,8 +182,15 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
         <h2>Exit-regels</h2>
         <p className="muted">Zodra één ingeschakelde regel geraakt wordt, verkoopt de bot. Een mislukte verkoop wordt automatisch opnieuw geprobeerd.</p>
         <div className="grid">
-          <Toggle ctx={ctx} path={['exits', 'stopLoss']} label="Stop-loss">
+          <Toggle
+            ctx={ctx}
+            path={['exits', 'stopLoss']}
+            label="Stop-loss"
+            hint="Grace period: de eerste seconden na aankoop vuurt alleen de noodstop (tegen ruis direct na de koop). 0 s = uit."
+          >
             <Num ctx={ctx} path={['exits', 'stopLoss', 'pct']} label="Verlies" unit="%" />
+            <Num ctx={ctx} path={['exits', 'stopLoss', 'graceSec']} label="Grace period" unit="s" />
+            <Num ctx={ctx} path={['exits', 'stopLoss', 'graceMaxLossPct']} label="Noodstop tijdens grace" unit="%" />
           </Toggle>
           <Toggle ctx={ctx} path={['exits', 'takeProfit']} label="Take-profit">
             <Num ctx={ctx} path={['exits', 'takeProfit', 'pct']} label="Winst" unit="%" />
@@ -233,6 +240,18 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
             <Num ctx={ctx} path={['general', 'slippagePct']} label="Slippage" unit="%" />
             <Num ctx={ctx} path={['general', 'priorityFeeSol']} label="Priority fee (max)" unit="SOL" />
             <Num ctx={ctx} path={['general', 'maxTxRetries']} label="Max. herhalingen bij mislukte tx" step="1" />
+            <Check
+              ctx={ctx}
+              path={['general', 'preventSleep']}
+              label="Slaapstand voorkomen zolang de bot draait (Windows)"
+              hint="Zonder dit stopt de bewaking (en dus de stop-loss) als de pc in slaapstand gaat. Laptop dichtklappen stopt de bot nog wel."
+            />
+          </div>
+          <div className="rule">
+            <h3>Paper-simulatie</h3>
+            <small className="muted">Maakt paper realistischer: live landt een transactie pas na enige tijd en kost een Jito-tip of hogere fee om op tijd te landen.</small>
+            <Num ctx={ctx} path={['paper', 'latencyMs']} label="Vertraging tot landing" unit="ms" step="100" />
+            <Num ctx={ctx} path={['paper', 'landingFeeSol']} label="Extra landingskosten per tx (Jito-tip)" unit="SOL" />
           </div>
           <div className="rule">
             <h3>Veiligheid</h3>
@@ -267,6 +286,7 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
             <Num ctx={ctx} path={['tracker', 'dexPollSec']} label="DexScreener pollen elke" unit="s" />
             <Num ctx={ctx} path={['tracker', 'positionPollSec']} label="Posities controleren elke" unit="s" />
             <Num ctx={ctx} path={['tracker', 'maxTrackedTokens']} label="Max. gevolgde tokens" step="1" />
+            <Num ctx={ctx} path={['tracker', 'postExitWatchMin']} label="Prijs na exit volgen (analyse)" unit="min" />
           </div>
         </div>
       </section>

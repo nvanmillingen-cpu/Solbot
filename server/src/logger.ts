@@ -21,7 +21,7 @@ const memoryStream = {
     try {
       const o = JSON.parse(line);
       const extra = Object.entries(o)
-        .filter(([k]) => !['level', 'time', 'msg', 'pid', 'hostname'].includes(k))
+        .filter(([k]) => !['level', 'time', 'tijd', 'msg', 'pid', 'hostname'].includes(k))
         .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
         .join(' ');
       recent.push({ time: o.time, level: LEVELS[o.level] ?? String(o.level), msg: extra ? `${o.msg} ${extra}` : o.msg });
@@ -32,11 +32,28 @@ const memoryStream = {
   },
 };
 
-const day = new Date().toISOString().slice(0, 10);
-export const logFile = path.join(config.logDir, `solbot-${day}.log`);
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/** Lokale datum en tijd als 2026-10-02_14-35-07 (sorteert goed en is geldig in bestandsnamen). */
+export function stamp(d = new Date()): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+
+/** Elke opstart een eigen run: eigen logbestand en run-id (ook opgeslagen bij elke trade). */
+export const runStartedAt = Date.now();
+export const runId = stamp(new Date(runStartedAt));
+export const logFile = path.join(config.logDir, `solbot_${runId}.log`);
 
 export const logger = pino(
-  { level: config.logLevel, base: undefined },
+  {
+    level: config.logLevel,
+    base: undefined,
+    // Leesbare lokale tijd naast de epoch-tijd, voor analyse achteraf
+    timestamp: () => {
+      const d = new Date();
+      return `,"time":${d.getTime()},"tijd":"${stamp(d).replace('_', ' ').replace(/-(\d\d)-(\d\d)$/, ':$1:$2')}.${String(d.getMilliseconds()).padStart(3, '0')}"`;
+    },
+  },
   pino.multistream([
     { level: 'debug', stream: pino.destination({ dest: logFile, sync: false, mkdir: true }) },
     { level: config.logLevel as pino.Level, stream: process.stdout },
@@ -46,4 +63,21 @@ export const logger = pino(
 
 export function recentLogs(limit = 100): LogEntry[] {
   return recent.slice(-limit);
+}
+
+const lastLogged = new Map<string, { at: number; suppressed: number }>();
+
+/**
+ * Rate-limiting voor herhalende fouten: geeft true als er gelogd mag worden (max. één keer
+ * per `intervalMs` per sleutel). `suppressed` = aantal overgeslagen meldingen sinds de vorige.
+ */
+export function shouldLog(key: string, intervalMs = 60_000, now = Date.now()): { ok: boolean; suppressed: number } {
+  const e = lastLogged.get(key);
+  if (e && now - e.at < intervalMs) {
+    e.suppressed++;
+    return { ok: false, suppressed: 0 };
+  }
+  const suppressed = e?.suppressed ?? 0;
+  lastLogged.set(key, { at: now, suppressed: 0 });
+  return { ok: true, suppressed };
 }

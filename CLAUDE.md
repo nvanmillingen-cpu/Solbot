@@ -89,7 +89,10 @@ web/src/                React + Vite + Recharts dashboard (één pagina, tabs)
 - **Mayhem mode**: de mint-supply is 2B (de curve meldt 1B), dus de mcap moet ×2. In tests gaven deze tokens de grootste verliezen. Ze worden standaard overgeslagen.
 - **Mint-adressen eindigen niet altijd op `pump`.** Dat zijn toch echte pump.fun-tokens. Controleer altijd on-chain of het curve-account bestaat.
 - De standaard lanceringsprijs van de curve is 30 SOL / 1,073 mld tokens ≈ 2,796e-8 SOL per token.
-- De on-chain curveprijs en de Jupiter-quote kwamen in tests overeen (ratio 0,99, het verschil is de fee). Paper-fills nemen toch de **ongunstigste** van de twee, omdat de gebruiker trades zag met een onverklaarbare afwijking van 8,7× (BANDS) en een slippage van −68% bij de exit (SINS).
+- De on-chain curveprijs en de Jupiter-quote komen meestal overeen, maar **Jupiter loopt achter bij snelle bewegingen** (±10–12% gemeten). Paper-**koop** = curve-wiskunde (zelfde bron als de exit-bewaking); Jupiter is alleen een controle, en bij een afwijking boven `maxQuoteDeviationPct` gaat de koop niet door. Een Jupiter-fill als instap gaf een SL binnen 1 s zonder echte daling (198kg). Paper-**verkoop** = ongunstigste van curve en Jupiter (BANDS 8,7×, SINS −68%).
+- Paper simuleert een landingsvertraging (`paper.latencyMs`, fill op de curve ná de vertraging) en landingskosten (`paper.landingFeeSol`, Jito-tip). De instap ligt normaal ~2,4% boven de curveprijs (1% priority fee op 0,05 SOL + 1,25% curve-fee + impact), plus de vertraging.
+- Snelle SL-s (< 1 s) waren meestal een **echte** curvedaling van 14–18% (Epstein, si.gov, CLIPPY). Daarom is er een SL-grace period (`stopLoss.graceSec`) met een noodstop (`graceMaxLossPct`).
+- PumpPortal kan verbonden zijn maar niets sturen: de oude watchdog (60 s zonder bericht) gaf dan elke ~76 s een reconnect. Nu: pong = verbinding leeft, alleen echte data reset de backoff.
 - Een trailing stop die direct vanaf de entry werkt, wordt door ruis geraakt. Daarom is er `activatePct` (standaard 20%).
 - **Een dump in één transactie kan geen enkele stop-loss voorkomen.** `accountSubscribe` op de curve helpt alleen bij geleidelijke dalingen.
 
@@ -100,6 +103,7 @@ web/src/                React + Vite + Recharts dashboard (één pagina, tabs)
 - Nieuwe instelling: voeg die toe in het zod-schema (`settings.ts`) met een default, toon hem in `web/src/components/SettingsPanel.tsx` en documenteer hem in de README. Bestaande opgeslagen settings worden automatisch aangevuld via `.prefault({})` en de defaults.
 - Nieuwe DB-kolom: voeg hem toe aan `SCHEMA` **en** aan de migratie in `openDb`.
 - "Reset statistieken" archiveert gesloten trades (`status = 'archived'`) in plaats van ze te verwijderen. Zo blijft `everBought` (de regel tegen dubbele aankopen) werken.
+- Elke opstart = eigen logbestand `logs/solbot_JJJJ-MM-DD_UU-MM-SS.log` en run-id; elke trade krijgt `config_hash` en `run_id`. Herhalende fouten loggen via `shouldLog(key)` (rate-limit) en feeduitval via `health` (`core/health.ts`).
 - Log met pino als `logger.info({ ...velden }, 'nederlands bericht')`. Velden verschijnen ook in het dashboard-log.
 - Controleer vóór een commit: `npm run typecheck`, `npm test` en `npm run build`. Voor gedragsveranderingen ook een korte paper-run op live data (zie hierboven). Rapporteer resultaten eerlijk, inclusief verliezen en kleine steekproeven.
 - Geen modelnamen of -id's in commits of code.
@@ -107,7 +111,8 @@ web/src/                React + Vite + Recharts dashboard (één pagina, tabs)
 ## Standaardinstellingen (afgestemd met de gebruiker)
 
 - **Filters:** bonding curve only, mayhem uit, leeftijd 2–30 min, mcap $10k–$60k, stijging ≥ 25% in 10 min (geen maximum), volume ≥ $8k totaal en ≥ $4k in 10 min, holders-filter uit.
-- **Exits:** SL 20%, TP 50%, trailing 15% (actief vanaf +20%), max. houdtijd 15 min.
+- **Exits:** SL 20% (grace 3 s, noodstop 35%), TP 50%, trailing 15% (actief vanaf +20%), max. houdtijd 15 min.
+- **Paper-simulatie:** vertraging 1500 ms, landingskosten 0,001 SOL per tx. Prijs na exit 15 min volgen (MFE/MAE).
 - **Risico:** 0,05 SOL per trade, max. 3 posities, dagelijks verliesmaximum 0,3 SOL.
 - **Veiligheid:** maker ≤ 5%, top-10 ≤ 35% (verplicht), round-trip ≤ 10%, quote-afwijking ≤ 10%, prijsbeweging ≤ 25%.
 

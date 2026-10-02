@@ -3,13 +3,14 @@ import { config } from '../config.js';
 import { kvGet, kvSet, type Db } from '../db.js';
 import type { Executor } from '../executor/types.js';
 import { logger } from '../logger.js';
-import { solUsd } from '../market/solPrice.js';
+import { solUsd, solUsdAgeMs } from '../market/solPrice.js';
 import type { SettingsStore } from '../settings.js';
 import { solBalance, type Wallet } from '../wallet.js';
 import { evaluateFilters, passesExceptHolders, type FilterResult } from './filters.js';
 import type { TokenMetrics } from './metrics.js';
 import type { PositionManager } from './positions.js';
-import { preBuyChecks } from './safety.js';
+import { health } from './health.js';
+import { preBuyChecks, probeTop10Support, top10Status } from './safety.js';
 import { startOfToday } from './stats.js';
 import type { TokenTracker } from './tracker.js';
 
@@ -30,6 +31,8 @@ export class Bot {
   lastCandidates: Candidate[] = [];
   lastEvalAt = 0;
   walletSol: number | null = null;
+  /** Sinds wanneer de bot aan staat (voor de run-timer in het dashboard). */
+  startedAt: number | null = null;
 
   constructor(
     private db: Db,
@@ -53,12 +56,14 @@ export class Bot {
       if (!this.wallet) throw new Error('geen geldige PRIVATE_KEY in .env');
     }
     this.running = true;
+    this.startedAt = Date.now();
     kvSet(this.db, 'bot_running', 'true');
-    logger.info({ mode: this.mode }, 'bot gestart');
+    logger.info({ mode: this.mode, config: this.store.hash() }, 'bot gestart');
   }
 
   stop() {
     this.running = false;
+    this.startedAt = null;
     kvSet(this.db, 'bot_running', 'false');
     logger.info('bot gestopt (open posities worden nog wel bewaakt)');
   }
@@ -68,6 +73,15 @@ export class Bot {
     this.timer = setInterval(() => void this.evaluate(), 2000);
     setInterval(() => void this.refreshWallet(), 30_000);
     void this.refreshWallet();
+    // Hartslag: detecteert slaapstand/bevriezing en laat bij een crash zien wanneer de bot stopte
+    setInterval(() => {
+      health.beat(this.positions.open().length);
+      kvSet(this.db, 'heartbeat', String(Date.now()));
+    }, 5000);
+    // Top-10-check faalde: regelmatig opnieuw testen, anders blijft kopen voor altijd geblokkeerd
+    setInterval(() => {
+      if (top10Status.ok === false && this.store.get().safety.maxTop10Pct.enabled) void probeTop10Support(this.conn);
+    }, 60_000);
   }
 
   stopLoop() {
@@ -86,6 +100,13 @@ export class Bot {
   /** Reden waarom er nu niet gekocht mag worden, of null. */
   buyBlocker(): string | null {
     const s = this.store.get();
+    // Fail-closed: zonder betrouwbare prijsdata niets kopen
+    const down = health.downFeeds();
+    if (down.length) return `prijsfeed uitgevallen (${down.join(', ')}); open posities mogelijk onbewaakt`;
+    if (solUsdAgeMs() > 5 * 60_000) return 'SOL-prijs onbekend of ouder dan 5 min (USD-filters onbetrouwbaar)';
+    if (s.safety.maxTop10Pct.enabled && s.safety.maxTop10Pct.requireData && top10Status.ok === false) {
+      return `top-10-holdercheck werkt niet (RPC: ${top10Status.lastError.slice(0, 80)})`;
+    }
     const open = this.positions.open().length;
     if (open >= s.risk.maxOpenPositions) return `max. ${s.risk.maxOpenPositions} posities bereikt`;
     if (s.risk.dailyLossLimit.enabled) {
@@ -193,10 +214,12 @@ export class Bot {
         solAmount: s.risk.solPerTrade,
         slippagePct: s.general.slippagePct,
         priorityFeeSol: s.general.priorityFeeSol,
+        maxQuoteDeviationPct: s.safety.maxQuoteDeviationPct,
       });
-      const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated });
+      const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated, configHash: this.store.hash() });
       logger.info(
-        { id: pos.id, symbol: m.symbol, mode, sol: +fill.solAmount.toFixed(5), via: fill.executor, sig: fill.signature, rtLossPct: safety.roundTripLossPct?.toFixed(1), devPct: safety.creatorPct?.toFixed(1), top10Pct: safety.top10Pct === null ? 'n.v.t.' : safety.top10Pct?.toFixed(1) },
+        { id: pos.id, symbol: m.symbol, mode, sol: +fill.solAmount.toFixed(5), via: fill.executor, config: pos.config_hash,
+          instapVsMarktPct: pos.entry_market_price_sol ? +((pos.entry_price_sol / pos.entry_market_price_sol - 1) * 100).toFixed(2) : null, sig: fill.signature, rtLossPct: safety.roundTripLossPct?.toFixed(1), devPct: safety.creatorPct?.toFixed(1), top10Pct: safety.top10Pct === null ? 'n.v.t.' : safety.top10Pct?.toFixed(1) },
         'GEKOCHT',
       );
       if (mode === 'live') void this.refreshWallet();

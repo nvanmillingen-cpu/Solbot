@@ -55,6 +55,11 @@ export function Positions({ positions, max, onSell }: { positions: OpenPositionV
                   <td className={`num ${signClass(p.livePnlSol)}`}>{fmt.sol(p.livePnlSol)}</td>
                   <td className="num">{fmt.dur(p.heldMin)}</td>
                   <td>
+                    {p.unmonitored && p.status === 'open' && (
+                      <span className="pill pill-warn" title="Geen verse prijs: stop-loss en andere exit-regels kunnen nu niet op tijd vuren">
+                        ⚠ onbewaakt{p.priceAgeS !== null ? ` (${p.priceAgeS}s)` : ''}
+                      </span>
+                    )}{' '}
                     {p.status === 'closing' ? (
                       <span className="pill">verkopen…</span>
                     ) : p.pending_exit ? (
