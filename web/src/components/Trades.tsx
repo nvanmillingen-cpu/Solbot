@@ -12,6 +12,8 @@ const REASONS: Record<string, string> = {
   TRAIL: 'Trailing stop',
   MANUAL: 'Handmatig',
   SELL_ALL: 'Sell all',
+  INIT: 'Inzet eruit',
+  PTP: 'Deel take-profit',
 };
 
 export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey: string; onReset: (mode: string) => void }) {
@@ -87,6 +89,11 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
                   <td className="num">{r.closed_at ? fmt.dur((r.closed_at - r.opened_at) / 60_000) : '–'}</td>
                   <td>
                     <span className="pill">{REASONS[r.exit_reason ?? ''] ?? r.exit_reason}</span>
+                    {r.partial_done && (
+                      <span className="pill" title={`Deelverkopen vóór de eindverkoop, samen ${fmt.solPlain(r.realized_sol)} SOL`}>
+                        + {r.partial_done.split(',').map((k) => (k === 'init' ? 'inzet' : `${k.slice(2)}%`)).join(', ')}
+                      </span>
+                    )}
                   </td>
                   <td className={`num ${r.exit_trigger_price_sol && r.exit_price_sol ? signClass(r.exit_price_sol / r.exit_trigger_price_sol - 1) : ''}`}>
                     {r.exit_trigger_price_sol && r.exit_price_sol ? fmt.pct((r.exit_price_sol / r.exit_trigger_price_sol - 1) * 100) : '–'}

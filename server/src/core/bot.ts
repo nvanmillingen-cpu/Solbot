@@ -216,10 +216,41 @@ export class Bot {
         priorityFeeSol: s.general.priorityFeeSol,
         maxQuoteDeviationPct: s.safety.maxQuoteDeviationPct,
       });
-      const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated, configHash: this.store.hash() });
+      const entry = {
+        ageMin: m.ageMin,
+        mcapUsd: m.marketCapUsd,
+        volTotalUsd: m.volumeTotalUsd,
+        vol10mUsd: m.volume10mUsd,
+        priceChangePct: m.priceChangePct,
+        // Holders uit de top-10-call (max. 19 = ondergrens), anders uit de tracker
+        holders: safety.holders ?? m.holders,
+        top10Pct: safety.top10Pct ?? null,
+        creatorPct: safety.creatorPct ?? null,
+        rtLossPct: safety.roundTripLossPct ?? null,
+      };
+      const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated, configHash: this.store.hash(), entry });
+      const r1 = (n: number | null | undefined, d = 1) => (n === null || n === undefined ? null : +n.toFixed(d));
       logger.info(
-        { id: pos.id, symbol: m.symbol, mode, sol: +fill.solAmount.toFixed(5), via: fill.executor, config: pos.config_hash,
-          instapVsMarktPct: pos.entry_market_price_sol ? +((pos.entry_price_sol / pos.entry_market_price_sol - 1) * 100).toFixed(2) : null, sig: fill.signature, rtLossPct: safety.roundTripLossPct?.toFixed(1), devPct: safety.creatorPct?.toFixed(1), top10Pct: safety.top10Pct === null ? 'n.v.t.' : safety.top10Pct?.toFixed(1) },
+        {
+          id: pos.id,
+          symbol: m.symbol,
+          mint: m.mint,
+          mode,
+          sol: +fill.solAmount.toFixed(5),
+          via: fill.executor,
+          config: pos.config_hash,
+          instapVsMarktPct: pos.entry_market_price_sol ? r1((pos.entry_price_sol / pos.entry_market_price_sol - 1) * 100, 2) : null,
+          leeftijdMin: r1(entry.ageMin),
+          mcapUsd: r1(entry.mcapUsd, 0),
+          volTotaalUsd: r1(entry.volTotalUsd, 0),
+          vol10mUsd: r1(entry.vol10mUsd, 0),
+          stijgingPct: r1(entry.priceChangePct),
+          holders: entry.holders,
+          top10Pct: entry.top10Pct === null ? 'n.v.t.' : r1(entry.top10Pct),
+          makerPct: r1(entry.creatorPct),
+          rtLossPct: r1(entry.rtLossPct),
+          sig: fill.signature,
+        },
         'GEKOCHT',
       );
       if (mode === 'live') void this.refreshWallet();

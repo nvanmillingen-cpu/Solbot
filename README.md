@@ -124,6 +124,13 @@ Een token wordt alleen gekocht als het aan **alle** ingeschakelde filters voldoe
 | Max. houdtijd | Verkoop na X minuten, ongeacht de prijs. |
 | Trailing stop | Verkoop als de prijs X% onder de hoogste prijs sinds aankoop zakt. De trailing stop wordt pas **actief** zodra de winst de activatiedrempel haalt (standaard 20%). Zo raakt normale ruis vlak na de koop hem niet meer, en eindigt een trail-exit na activatie boven de instapprijs. Activatie 0 = direct vanaf aankoop. |
 
+| Inzet eruit halen | Bij +X% verkoopt de bot zoveel tokens dat je **inleg (incl. fees) terug** is, plus 4% marge voor fees en impact. De rest blijft staan ("free ride") en volgt de overige exit-regels. Voorbeeld: bij +100% wordt ongeveer 52% verkocht. |
+| Deel take-profit | Tot 5 niveaus, elk in de vorm "bij X% winst Y% van de **resterende** tokens verkopen". Elk niveau verkoopt één keer per positie. Voorbeeld: niveaus 50%/50% en 100%/50% → bij +50% de helft weg, bij +100% nog een kwart, de laatste kwart loopt door. |
+
+Volgorde: stop-loss, trailing stop en max. houdtijd verkopen altijd **alles** en gaan voor. Daarna komt *inzet eruit*, daarna de deel-take-profit-niveaus (laagste eerst), en pas daarna de gewone take-profit, die de **hele rest** verkoopt. Wil je de rest laten doorlopen, zet de gewone take-profit dan hoger dan je hoogste niveau, of zet hem uit. Per controle wordt maximaal één deelverkoop gedaan. Een deelverkoop gebruikt dezelfde closing-lock als een volledige verkoop. Mislukt hij, dan probeert de bot het na 10 s opnieuw.
+
+Bij de eindverkoop telt de P&L **alle opbrengsten**: deelverkopen plus de verkoop van de rest. Elke (deel)verkoop staat ook apart in de tabel `position_sells`. In het dashboard zie je bij open posities hoeveel SOL al terug is en welk deel nog openstaat, en in de tradehistorie welke niveaus zijn uitgevoerd.
+
 De P&L wordt berekend ten opzichte van de **effectieve instapprijs**, inclusief fees en slippage. Bij meerdere treffers tegelijk geldt de volgorde SL → trailing → TP → tijd.
 
 ### Risico
@@ -201,6 +208,7 @@ De directe pump.fun-instructie is bewust niet zelf geïmplementeerd. Het pump.fu
 
 - **MFE/MAE per trade**: de bot slaat de hoogste en laagste prijs **tijdens** het houden op (met tijdstip). Na de exit volgt hij de prijs nog **15 minuten** (*Prijs na exit volgen*, tabblad Instellingen → Datafeed). Hij slaat dan de hoogste en laagste prijs na de exit op, en of het token in die tijd gegradueerd is. Aan het eind van het venster komt er een regel `na-exit analyse (MFE/MAE)` in de log. In de tradehistorie zie je de kolommen *Max / min* en *Na exit* (🎓 = gegradueerd na de exit).
 - **Config-hash**: elke trade krijgt een korte hash van de instellingen bij aankoop (`config_hash`), plus het run-id van de opstart (`run_id`). Elke instellingenversie wordt bewaard (tabel `settings_versions`, of `GET /api/settings/versions`). Bovenin het dashboard staat de huidige hash en hoeveel trades er met deze instellingen zijn ("x/200"). Vergelijk instellingen pas na **200–300 trades** met dezelfde hash. Wijzig je de instellingen terwijl de bot draait, dan komt dat als waarschuwing in de log.
+- **Tokendata per trade**: bij elke aankoop slaat de bot op hoe het token er op dat moment voor stond: **leeftijd, market cap, volume (totaal en 10 min), prijsstijging, holders, top-10-%, maker-%** en het round-trip-verlies. Dit staat in de `GEKOCHT`- en `positie gesloten`-regels in de log, en als kolommen in de CSV. Holders komen uit dezelfde RPC-call als de top-10-check. Die geeft maximaal 20 accounts, dus 19 betekent "19 of meer".
 - **CSV-export**: knop **Download CSV** in de tradehistorie (of `GET /api/trades.csv`). Je krijgt alle trades, ook gearchiveerde, met afgeleide kolommen in %: instap vs. markt, exit-slippage, max/min tijdens het houden, max/min na de exit en gegradueerd na de exit. Het bestand opent direct in Excel.
 
 ## Robuustheid

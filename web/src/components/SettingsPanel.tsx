@@ -78,6 +78,45 @@ function Select({ ctx, path, label, options }: { ctx: Ctx; path: Path; label: st
   );
 }
 
+type Level = { pct: number; sellPct: number };
+
+/** Lijst met deel-take-profit-niveaus: per regel "bij X% winst Y% van de rest verkopen". */
+function Levels({ ctx }: { ctx: Ctx }) {
+  const path: Path = ['exits', 'partialTakeProfit', 'levels'];
+  const levels = (getIn(ctx.draft, path) as Level[]) ?? [];
+  const set = (i: number, k: keyof Level, v: number) => ctx.set(path, levels.map((l, j) => (j === i ? { ...l, [k]: v } : l)));
+  return (
+    <div className="levels">
+      {levels.map((l, i) => (
+        <div className="level-row" key={i}>
+          <span className="muted">Bij</span>
+          <div className="input-unit">
+            <input aria-label={`Niveau ${i + 1}: winst`} type="number" min={1} step="any" value={Number.isFinite(l.pct) ? l.pct : ''} onChange={(e) => set(i, 'pct', e.target.value === '' ? NaN : Number(e.target.value))} />
+            <span className="unit">% winst</span>
+          </div>
+          <span className="muted">verkoop</span>
+          <div className="input-unit">
+            <input aria-label={`Niveau ${i + 1}: verkopen`} type="number" min={1} max={100} step="any" value={Number.isFinite(l.sellPct) ? l.sellPct : ''} onChange={(e) => set(i, 'sellPct', e.target.value === '' ? NaN : Number(e.target.value))} />
+            <span className="unit">% van de rest</span>
+          </div>
+          <button type="button" className="btn btn-small" aria-label={`Niveau ${i + 1} verwijderen`} onClick={() => ctx.set(path, levels.filter((_, j) => j !== i))}>
+            ✕
+          </button>
+        </div>
+      ))}
+      {levels.length < 5 && (
+        <button
+          type="button"
+          className="btn btn-small"
+          onClick={() => ctx.set(path, [...levels, { pct: (levels.at(-1)?.pct ?? 0) + 50, sellPct: 50 }])}
+        >
+          + Niveau toevoegen
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPanel({ onError }: { onError: (e: string | null) => void }) {
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -206,6 +245,22 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
           >
             <Num ctx={ctx} path={['exits', 'trailingStop', 'activatePct']} label="Actief vanaf winst" unit="%" />
             <Num ctx={ctx} path={['exits', 'trailingStop', 'pct']} label="Daling vanaf top" unit="%" />
+          </Toggle>
+          <Toggle
+            ctx={ctx}
+            path={['exits', 'takeInitial']}
+            label="Inzet eruit halen"
+            hint="Bij deze winst verkoopt de bot zoveel tokens dat je inleg (incl. fees) terug is. De rest blijft staan en volgt de andere exit-regels en de deel-take-profit hieronder. Voorbeeld: bij +100% wordt ongeveer de helft verkocht."
+          >
+            <Num ctx={ctx} path={['exits', 'takeInitial', 'pct']} label="Bij winst" unit="%" min={5} />
+          </Toggle>
+          <Toggle
+            ctx={ctx}
+            path={['exits', 'partialTakeProfit']}
+            label="Deel take-profit"
+            hint="Elk niveau verkoopt één keer een deel van de op dat moment resterende tokens. Wil je de rest laten doorlopen, zet de gewone take-profit dan hoger dan je hoogste niveau of uit; anders verkoopt die de rest meteen erna."
+          >
+            <Levels ctx={ctx} />
           </Toggle>
         </div>
       </section>

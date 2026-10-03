@@ -7,7 +7,7 @@ import { fetchDexInfo } from '../market/dexscreener.js';
 import { jupPricesUsd } from '../market/jupiter.js';
 import { solUsd } from '../market/solPrice.js';
 import type { Settings } from '../settings.js';
-import { evaluateExit, type ExitReason } from './exits.js';
+import { evaluateExit, evaluatePartial, type ExitReason, type PartialExit } from './exits.js';
 import { health } from './health.js';
 import { addPrice } from './metrics.js';
 import type { TokenTracker } from './tracker.js';
@@ -54,6 +54,31 @@ export interface PositionRow {
   post_watch_until: number | null;
   config_hash: string | null;
   run_id: string | null;
+  tokens_sold_raw: string;
+  realized_sol: number;
+  partial_done: string;
+  entry_age_min: number | null;
+  entry_mcap_usd: number | null;
+  entry_vol_total_usd: number | null;
+  entry_vol10m_usd: number | null;
+  entry_price_change_pct: number | null;
+  entry_holders: number | null;
+  entry_top10_pct: number | null;
+  entry_creator_pct: number | null;
+  entry_rt_loss_pct: number | null;
+}
+
+/** Tokendata op het moment van aankoop (voor analyse per trade). */
+export interface EntryInfo {
+  ageMin: number | null;
+  mcapUsd: number | null;
+  volTotalUsd: number | null;
+  vol10mUsd: number | null;
+  priceChangePct: number | null;
+  holders: number | null;
+  top10Pct: number | null;
+  creatorPct: number | null;
+  rtLossPct: number | null;
 }
 
 export interface OpenPositionView extends PositionRow {
@@ -72,8 +97,31 @@ const UNMONITORED_MS = 15_000;
 
 const pctOf = (price: number | null, ref: number | null) => (price !== null && ref ? +((price / ref - 1) * 100).toFixed(1) : null);
 
-export function tokensUi(p: Pick<PositionRow, 'token_amount_raw' | 'decimals'>): number {
-  return Number(BigInt(p.token_amount_raw)) / 10 ** p.decimals;
+/** Nog niet verkochte tokens (ruw). */
+export function remainingRaw(p: Pick<PositionRow, 'token_amount_raw' | 'tokens_sold_raw'>): bigint {
+  const rest = BigInt(p.token_amount_raw) - BigInt(p.tokens_sold_raw || '0');
+  return rest > 0n ? rest : 0n;
+}
+
+/** Nog niet verkochte tokens (hele tokens). */
+export function tokensUi(p: Pick<PositionRow, 'token_amount_raw' | 'tokens_sold_raw' | 'decimals'>): number {
+  return Number(remainingRaw(p)) / 10 ** p.decimals;
+}
+
+const r2 = (n: number | null | undefined, d = 1) => (n === null || n === undefined ? null : +n.toFixed(d));
+
+/** Aankoopdata als logvelden. */
+function entryFields(r: PositionRow) {
+  return {
+    leeftijdMin: r2(r.entry_age_min),
+    mcapUsd: r2(r.entry_mcap_usd, 0),
+    volTotaalUsd: r2(r.entry_vol_total_usd, 0),
+    vol10mUsd: r2(r.entry_vol10m_usd, 0),
+    stijgingPct: r2(r.entry_price_change_pct),
+    holders: r.entry_holders,
+    top10Pct: r2(r.entry_top10_pct),
+    makerPct: r2(r.entry_creator_pct),
+  };
 }
 
 /** Houdt posities bij in SQLite en bewaakt exit-regels. */
@@ -86,6 +134,8 @@ export class PositionManager {
   private lastExternalFetch = 0;
   /** Gesloten posities waarvan de prijs na de exit nog gevolgd wordt (voor de samenvatting aan het eind). */
   private watching = new Map<number, string>();
+  /** Na een mislukte deelverkoop: niet vóór dit tijdstip opnieuw proberen. */
+  private partialRetryAt = new Map<number, number>();
 
   constructor(
     private db: Db,
@@ -171,7 +221,20 @@ export class PositionManager {
       if (!r.next_sell_at || now >= r.next_sell_at) void this.sell(r.id, r.pending_exit, price ?? undefined);
       return;
     }
-    const reason = evaluateExit({ entryPriceSol: r.entry_price_sol, peakPriceSol: r.peak_price_sol, openedAt: r.opened_at }, price, now, this.settings().exits);
+    const exits = this.settings().exits;
+    const reason = evaluateExit({ entryPriceSol: r.entry_price_sol, peakPriceSol: r.peak_price_sol, openedAt: r.opened_at }, price, now, exits);
+    // Deelverkopen (inzet eruit / deel take-profit) gaan vóór de volledige take-profit; SL, trailing en tijd gaan altijd voor
+    if (!reason || reason === 'TP') {
+      const partial = evaluatePartial(
+        { entryPriceSol: r.entry_price_sol, entrySol: r.entry_sol, realizedSol: r.realized_sol, remainingTokens: tokensUi(r), done: r.partial_done ? r.partial_done.split(',') : [] },
+        price,
+        exits,
+      );
+      if (partial && now >= (this.partialRetryAt.get(r.id) ?? 0)) {
+        void this.sellPartial(r.id, partial, price!);
+        return;
+      }
+    }
     if (reason) {
       logger.info({ id: r.id, symbol: r.symbol, reason, price, entry: r.entry_price_sol }, 'exit-regel geraakt');
       void this.sell(r.id, reason, price ?? undefined);
@@ -199,7 +262,7 @@ export class PositionManager {
     return Boolean(this.db.prepare('SELECT 1 FROM positions WHERE mint = ? LIMIT 1').get(mint));
   }
 
-  record(p: { mint: string; symbol: string; name: string; mode: 'paper' | 'live'; fill: Fill; graduated: boolean; configHash?: string }): PositionRow {
+  record(p: { mint: string; symbol: string; name: string; mode: 'paper' | 'live'; fill: Fill; graduated: boolean; configHash?: string; entry?: EntryInfo }): PositionRow {
     const ui = Number(p.fill.tokenAmountRaw) / 10 ** p.fill.decimals;
     const entryPrice = ui > 0 ? p.fill.solAmount / ui : 0;
     const now = Date.now();
@@ -207,8 +270,10 @@ export class PositionManager {
       .prepare(
         `INSERT INTO positions (mint, symbol, name, mode, status, executor, entry_sol, token_amount_raw, decimals, entry_price_sol,
           opened_at, peak_price_sol, last_price_sol, last_price_at, buy_sig, graduated, entry_market_price_sol,
-          peak_price_at, min_price_sol, min_price_at, config_hash, run_id)
-         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          peak_price_at, min_price_sol, min_price_at, config_hash, run_id,
+          entry_age_min, entry_mcap_usd, entry_vol_total_usd, entry_vol10m_usd, entry_price_change_pct,
+          entry_holders, entry_top10_pct, entry_creator_pct, entry_rt_loss_pct)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.mint,
@@ -232,6 +297,15 @@ export class PositionManager {
         now,
         p.configHash ?? null,
         runId,
+        p.entry?.ageMin ?? null,
+        p.entry?.mcapUsd ?? null,
+        p.entry?.volTotalUsd ?? null,
+        p.entry?.vol10mUsd ?? null,
+        p.entry?.priceChangePct ?? null,
+        p.entry?.holders ?? null,
+        p.entry?.top10Pct ?? null,
+        p.entry?.creatorPct ?? null,
+        p.entry?.rtLossPct ?? null,
       );
     if (p.fill.marketPriceSol && entryPrice > 0) {
       const dev = (entryPrice / p.fill.marketPriceSol - 1) * 100;
@@ -356,6 +430,74 @@ export class PositionManager {
     }
   }
 
+  /**
+   * Gedeeltelijke verkoop (inzet eruit / deel take-profit). Gebruikt dezelfde closing-lock als een
+   * volledige verkoop; daarna gaat de positie weer op 'open' met minder tokens. Bijna alles
+   * verkopen (≥ 98%) wordt een gewone volledige verkoop.
+   */
+  async sellPartial(id: number, pe: PartialExit, triggerPriceSol: number): Promise<boolean> {
+    if (this.selling.has(id)) return false;
+    const r = this.get(id);
+    if (!r || r.status !== 'open') return false;
+    const rest = remainingRaw(r);
+    const amount = (rest * BigInt(Math.floor(pe.fraction * 10_000))) / 10_000n;
+    if (pe.fraction >= 0.98 || amount >= rest) return this.sell(id, pe.kind, triggerPriceSol);
+    if (amount <= 0n) {
+      // Niets te verkopen (bijv. inleg al terug uit eerdere deelverkopen): niveau alleen afvinken
+      const done = [...(r.partial_done ? r.partial_done.split(',') : []), pe.key].join(',');
+      this.db.prepare("UPDATE positions SET partial_done = ? WHERE id = ? AND status = 'open'").run(done, id);
+      logger.info({ id, symbol: r.symbol, niveau: pe.key }, 'niveau afgevinkt zonder verkoop (inleg al terug)');
+      return true;
+    }
+    const lock = this.db.prepare("UPDATE positions SET status = 'closing' WHERE id = ? AND status = 'open'").run(id);
+    if (Number(lock.changes) !== 1) return false;
+    this.selling.add(id);
+    const s = this.settings().general;
+    const pnlAtTrigger = (triggerPriceSol / r.entry_price_sol - 1) * 100;
+    try {
+      const exec = this.executorFor(r.mode);
+      if (!exec) throw new Error(`geen ${r.mode} executor beschikbaar (wallet ontbreekt?)`);
+      const fill = await exec.sell({ mint: r.mint, tokenAmountRaw: amount, decimals: r.decimals, slippagePct: s.slippagePct, priorityFeeSol: s.priorityFeeSol });
+      const sold = fill.tokenAmountRaw > 0n && fill.tokenAmountRaw <= rest ? fill.tokenAmountRaw : amount;
+      const soldUi = Number(sold) / 10 ** r.decimals;
+      const done = [...(r.partial_done ? r.partial_done.split(',') : []), pe.key].join(',');
+      const totalSold = BigInt(r.tokens_sold_raw || '0') + sold;
+      const realized = r.realized_sol + fill.solAmount;
+      this.db
+        .prepare("UPDATE positions SET status = 'open', tokens_sold_raw = ?, realized_sol = ?, partial_done = ? WHERE id = ?")
+        .run(totalSold.toString(), realized, done, id);
+      this.db
+        .prepare('INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, Date.now(), pe.kind, pe.key, sold.toString(), fill.solAmount, soldUi > 0 ? fill.solAmount / soldUi : null, triggerPriceSol, pnlAtTrigger, fill.signature ?? null);
+      this.partialRetryAt.delete(id);
+      logger.info(
+        {
+          id,
+          symbol: r.symbol,
+          soort: pe.kind === 'INIT' ? 'inzet eruit' : 'deel take-profit',
+          niveau: pe.key,
+          winstPct: +pnlAtTrigger.toFixed(1),
+          verkochtPct: +((Number(sold) / Number(BigInt(r.token_amount_raw))) * 100).toFixed(1),
+          ontvangenSol: +fill.solAmount.toFixed(5),
+          totaalTerugSol: +realized.toFixed(5),
+          inlegSol: +r.entry_sol.toFixed(5),
+          restPct: +((Number(rest - sold) / Number(BigInt(r.token_amount_raw))) * 100).toFixed(1),
+          via: fill.executor,
+          sig: fill.signature,
+        },
+        'deelverkoop uitgevoerd',
+      );
+      return true;
+    } catch (e) {
+      this.db.prepare("UPDATE positions SET status = 'open' WHERE id = ?").run(id);
+      this.partialRetryAt.set(id, Date.now() + 10_000);
+      logger.error({ id, symbol: r.symbol, niveau: pe.key, err: String(e).slice(0, 300) }, 'deelverkoop mislukt, over 10 s opnieuw');
+      return false;
+    } finally {
+      this.selling.delete(id);
+    }
+  }
+
   /** Verkoopt een positie. Bij een fout blijft de positie open met `pending_exit` en wordt het later opnieuw geprobeerd. */
   async sell(id: number, reason: ExitReason, triggerPriceSol?: number): Promise<boolean> {
     if (this.selling.has(id)) return false;
@@ -375,7 +517,7 @@ export class PositionManager {
       if (!exec) throw new Error(`geen ${r.mode} executor beschikbaar (wallet ontbreekt?)`);
       const fill = await exec.sell({
         mint: r.mint,
-        tokenAmountRaw: BigInt(r.token_amount_raw),
+        tokenAmountRaw: remainingRaw(r),
         decimals: r.decimals,
         // Bij herhaalde mislukte verkoop: meer slippage toestaan
         slippagePct: Math.min(50, s.slippagePct + r.sell_attempts * 5),
@@ -388,7 +530,9 @@ export class PositionManager {
       if (slippagePct !== null && slippagePct < -15) {
         logger.warn({ id, symbol: r.symbol, trigger, fillPrice, market: fill.marketPriceSol, slippagePct: slippagePct.toFixed(1) }, 'grote slippage tussen exit-trigger en verkoop');
       }
-      const pnlSol = fill.solAmount - r.entry_sol;
+      // Totale opbrengst = eerdere deelverkopen + deze eindverkoop
+      const exitSol = r.realized_sol + fill.solAmount;
+      const pnlSol = exitSol - r.entry_sol;
       const closedAt = Date.now();
       const watchMin = this.settings().tracker.postExitWatchMin;
       const pnlPct = r.entry_sol > 0 ? (pnlSol / r.entry_sol) * 100 : 0;
@@ -397,7 +541,10 @@ export class PositionManager {
           `UPDATE positions SET status = 'closed', closed_at = ?, exit_sol = ?, exit_price_sol = ?, exit_reason = ?, pnl_sol = ?, pnl_pct = ?,
             sell_sig = ?, pending_exit = NULL, last_error = NULL, post_watch_until = ?, post_graduated = 0 WHERE id = ?`,
         )
-        .run(closedAt, fill.solAmount, fillPrice, reason, pnlSol, pnlPct, fill.signature ?? null, watchMin > 0 ? closedAt + watchMin * 60_000 : null, id);
+        .run(closedAt, exitSol, fillPrice, reason, pnlSol, pnlPct, fill.signature ?? null, watchMin > 0 ? closedAt + watchMin * 60_000 : null, id);
+      this.db
+        .prepare('INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, closedAt, reason, null, remainingRaw(r).toString(), fill.solAmount, fillPrice || null, trigger, trigger ? (trigger / r.entry_price_sol - 1) * 100 : null, fill.signature ?? null);
       // Token blijft gevolgd zolang het na-exit-venster loopt
       if (watchMin <= 0) this.tracker.pinned.delete(r.mint);
       logger.info(
@@ -413,6 +560,9 @@ export class PositionManager {
           maxTijdensPct: pctOf(r.peak_price_sol, r.entry_price_sol),
           minTijdensPct: pctOf(r.min_price_sol, r.entry_price_sol),
           config: r.config_hash,
+          deelverkopen: r.partial_done || null,
+          uitDeelverkopenSol: r.realized_sol ? +r.realized_sol.toFixed(5) : null,
+          ...entryFields(r),
           via: fill.executor,
           sig: fill.signature,
         },
@@ -440,7 +590,7 @@ export class PositionManager {
 
   views(now = Date.now()): OpenPositionView[] {
     return this.open().map((r) => {
-      const valueSol = r.last_price_sol !== null ? tokensUi(r) * r.last_price_sol : null;
+      const valueSol = r.last_price_sol !== null ? tokensUi(r) * r.last_price_sol + r.realized_sol : null;
       const livePnlSol = valueSol !== null ? valueSol - r.entry_sol : null;
       return {
         ...r,
@@ -498,6 +648,12 @@ export class PositionManager {
           ${local('opened_at')} AS geopend, ${local('closed_at')} AS gesloten,
           ROUND((closed_at - opened_at) / 1000.0, 1) AS houdtijd_s,
           exit_reason, entry_sol, exit_sol, ROUND(pnl_sol, 6) AS pnl_sol, ROUND(pnl_pct, 2) AS pnl_pct,
+          partial_done AS deelverkopen, ROUND(realized_sol, 6) AS uit_deelverkopen_sol,
+          ROUND(entry_age_min, 2) AS leeftijd_min, ROUND(entry_mcap_usd) AS mcap_usd,
+          ROUND(entry_vol_total_usd) AS volume_totaal_usd, ROUND(entry_vol10m_usd) AS volume_10m_usd,
+          ROUND(entry_price_change_pct, 1) AS stijging_pct, entry_holders AS holders,
+          ROUND(entry_top10_pct, 1) AS top10_pct, ROUND(entry_creator_pct, 1) AS maker_pct,
+          ROUND(entry_rt_loss_pct, 2) AS round_trip_verlies_pct,
           ${pct('entry_price_sol', 'entry_market_price_sol')} AS instap_vs_markt_pct,
           ${pct('exit_price_sol', 'exit_trigger_price_sol')} AS exit_slippage_pct,
           ${pct('peak_price_sol', 'entry_price_sol')} AS max_tijdens_pct,

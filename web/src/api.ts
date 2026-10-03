@@ -22,6 +22,7 @@ export const fmt = {
   sol: (n: number | null | undefined, d = 4) => (n === null || n === undefined ? '–' : `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(d)}`),
   solPlain: (n: number | null | undefined, d = 4) => (n === null || n === undefined ? '–' : n.toFixed(d)),
   pct: (n: number | null | undefined, d = 1) => (n === null || n === undefined ? '–' : `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(d)}%`),
+  pctPlain: (n: number | null | undefined, d = 0) => (n === null || n === undefined ? '–' : `${n.toFixed(d)}%`),
   usd: (n: number | null | undefined) => (n === null || n === undefined ? '–' : `${n < 0 ? '−' : ''}$${Math.abs(Math.round(n)).toLocaleString('nl-NL')}`),
   price: (n: number | null | undefined) => (n === null || n === undefined ? '–' : n.toExponential(3)),
   dur: (min: number) => (min < 60 ? `${Math.floor(min)}m ${Math.floor((min % 1) * 60)}s` : `${Math.floor(min / 60)}u ${Math.floor(min % 60)}m`),

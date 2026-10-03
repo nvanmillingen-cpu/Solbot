@@ -16,6 +16,8 @@ export interface SafetyResult {
   creatorPct?: number;
   /** % van de supply in top-10 wallets; null = niet beschikbaar via deze RPC. */
   top10Pct?: number | null;
+  /** Aantal holders met saldo (zonder bonding curve/pool). Uit max. 20 grootste accounts, dus een ondergrens bij ≥ 19. */
+  holders?: number | null;
 }
 
 /** Token-2022 extensies waarmee de maker transfers kan blokkeren of tokens kan afpakken. */
@@ -154,10 +156,17 @@ export function top10FromAccounts(
  * tokens het grootste account = de pool). null als de RPC de data niet levert.
  */
 export async function top10SharePct(conn: Connection, mint: string, m: MintInfo, graduated: boolean): Promise<number | null> {
+  return (await top10Details(conn, mint, m, graduated)).pct;
+}
+
+/** Top-10-aandeel plus het aantal holders uit dezelfde RPC-call (geen extra kosten). */
+export async function top10Details(conn: Connection, mint: string, m: MintInfo, graduated: boolean): Promise<{ pct: number | null; holders: number | null }> {
   const accounts = await largestAccounts(conn, mint);
-  if (!accounts) return null;
+  if (!accounts) return { pct: null, holders: null };
   const exclude = graduated ? null : associatedTokenAddress(bondingCurvePda(mint), new PublicKey(mint), m.tokenProgram).toBase58();
-  return top10FromAccounts(accounts, BigInt(m.parsed.supply), exclude);
+  const nonZero = accounts.filter((a) => BigInt(a.amount) > 0n);
+  const holders = exclude ? nonZero.filter((a) => (typeof a.address === 'string' ? a.address : a.address.toBase58()) !== exclude).length : Math.max(0, nonZero.length - 1);
+  return { pct: top10FromAccounts(accounts, BigInt(m.parsed.supply), exclude), holders };
 }
 
 export function checkMintAuthorities(mi: MintInfo): { ok: boolean; reasons: string[] } {
@@ -266,6 +275,7 @@ export async function preBuyChecks(
   // Concentratie: dev-bezit en top-10 holders (beschermt tegen dumps)
   let creatorPct: number | undefined;
   let top10Pct: number | null | undefined;
+  let holders: number | null | undefined;
   if (safety.maxCreatorPct.enabled && creator) {
     try {
       creatorPct = await creatorSharePct(conn, m.mint, creator, mi);
@@ -277,12 +287,12 @@ export async function preBuyChecks(
     }
   }
   if (safety.maxTop10Pct.enabled) {
-    top10Pct = await top10SharePct(conn, m.mint, mi, !onCurve);
+    ({ pct: top10Pct, holders } = await top10Details(conn, m.mint, mi, !onCurve));
     if (top10Pct === null && safety.maxTop10Pct.requireData) {
-      return { ok: false, reasons: ['top-10-holders onbekend (RPC-fout); check is verplicht'], permanent: false, creatorPct, top10Pct };
+      return { ok: false, reasons: ['top-10-holders onbekend (RPC-fout); check is verplicht'], permanent: false, creatorPct, top10Pct, holders };
     }
     if (top10Pct !== null && top10Pct > safety.maxTop10Pct.pct) {
-      return { ok: false, reasons: [`top-10 holders bezitten ${top10Pct.toFixed(1)}% > ${safety.maxTop10Pct.pct}%`], permanent: false, creatorPct, top10Pct };
+      return { ok: false, reasons: [`top-10 holders bezitten ${top10Pct.toFixed(1)}% > ${safety.maxTop10Pct.pct}%`], permanent: false, creatorPct, top10Pct, holders };
     }
   }
 
@@ -304,5 +314,5 @@ export async function preBuyChecks(
     }
   }
 
-  return { ok: reasons.length === 0, reasons, permanent: false, roundTripLossPct, creatorPct, top10Pct };
+  return { ok: reasons.length === 0, reasons, permanent: false, roundTripLossPct, creatorPct, top10Pct, holders };
 }

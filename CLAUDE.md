@@ -16,6 +16,9 @@ Geautomatiseerde tradingbot voor **pump.fun-tokens op Solana**, met een lokaal w
 - De eigenaar gebruikt **Windows** en is geen ontwikkelaar. Geef stap-voor-stap-instructies met kant-en-klare commando's.
 - Hij heeft de code als **ZIP** gedownload en heeft **geen Git** geïnstalleerd. Updaten gaat via een nieuwe ZIP, waarbij `.env` en `data/` worden meegenomen. Zie de vorige uitleg in de README of de chat.
 - In PowerShell is het uitvoeren van scripts geblokkeerd: gebruik **`npm.cmd`** in plaats van `npm`, of `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- **Actieve installatie**: `C:Users
+.vanmillingenDocuments. NielsSolbot` (gestart met `Solbot starten.bat`), met daarin de echte `data/solbot.db` en `logs/`. `C:Users
+.vanmillingenSolbot` is een oudere clone; lees daar geen instellingen uit. Git is wel aanwezig.
 - De ontwikkelbranch is `claude/new-session-6l7qs4`. Er is nog geen pull request.
 - **Zet nooit sleutels in git.** `.env` staat in `.gitignore`. De gebruiker heeft eerder een Helius-sleutel in de chat geplakt, die inmiddels vervangen is.
 
@@ -93,6 +96,7 @@ web/src/                React + Vite + Recharts dashboard (één pagina, tabs)
 - Paper simuleert een landingsvertraging (`paper.latencyMs`, fill op de curve ná de vertraging) en landingskosten (`paper.landingFeeSol`, Jito-tip). De instap ligt normaal ~2,4% boven de curveprijs (1% priority fee op 0,05 SOL + 1,25% curve-fee + impact), plus de vertraging.
 - Snelle SL-s (< 1 s) waren meestal een **echte** curvedaling van 14–18% (Epstein, si.gov, CLIPPY). Daarom is er een SL-grace period (`stopLoss.graceSec`) met een noodstop (`graceMaxLossPct`).
 - PumpPortal kan verbonden zijn maar niets sturen: de oude watchdog (60 s zonder bericht) gaf dan elke ~76 s een reconnect. Nu: pong = verbinding leeft, alleen echte data reset de backoff.
+- **Deelverkopen**: `token_amount_raw` = gekochte tokens, `tokens_sold_raw` = al verkocht, rest via `remainingRaw()`. `realized_sol` telt mee in `exit_sol`/`pnl_sol` bij de eindverkoop. Elke (deel)verkoop staat in `position_sells`. Pure regels in `evaluatePartial` (exits.ts); SL/TRAIL/TIME gaan voor, deelverkopen vóór de volledige TP.
 - Een trailing stop die direct vanaf de entry werkt, wordt door ruis geraakt. Daarom is er `activatePct` (standaard 20%).
 - **Een dump in één transactie kan geen enkele stop-loss voorkomen.** `accountSubscribe` op de curve helpt alleen bij geleidelijke dalingen.
 

@@ -163,3 +163,7 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--accent);
 .head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .run-timer { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.levels { display: flex; flex-direction: column; gap: 8px; }
+.level-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.level-row .input-unit input { width: 80px; }

@@ -1,6 +1,6 @@
 import type { Settings } from '../settings.js';
 
-export type ExitReason = 'SL' | 'TP' | 'TIME' | 'TRAIL' | 'MANUAL' | 'SELL_ALL';
+export type ExitReason = 'SL' | 'TP' | 'TIME' | 'TRAIL' | 'MANUAL' | 'SELL_ALL' | 'INIT' | 'PTP';
 
 export const EXIT_LABELS: Record<ExitReason, string> = {
   SL: 'Stop-loss',
@@ -9,6 +9,8 @@ export const EXIT_LABELS: Record<ExitReason, string> = {
   TRAIL: 'Trailing stop',
   MANUAL: 'Handmatig',
   SELL_ALL: 'Sell all',
+  INIT: 'Inzet eruit',
+  PTP: 'Deel take-profit',
 };
 
 export interface ExitInput {
@@ -40,5 +42,59 @@ export function evaluateExit(p: ExitInput, priceSol: number | null, now: number,
     if (exits.takeProfit.enabled && pnlPct >= exits.takeProfit.pct) return 'TP';
   }
   if (exits.maxHold.enabled && now - p.openedAt >= exits.maxHold.minutes * 60_000) return 'TIME';
+  return null;
+}
+
+export type PartialKind = 'INIT' | 'PTP';
+
+export interface PartialExit {
+  /** Unieke sleutel per niveau; wordt bij de positie opgeslagen zodat een niveau maar één keer verkoopt. */
+  key: string;
+  kind: PartialKind;
+  /** Deel van de resterende tokens dat verkocht moet worden (0–1). */
+  fraction: number;
+}
+
+export interface PartialInput {
+  entryPriceSol: number;
+  /** Totale inleg in SOL (incl. fees). */
+  entrySol: number;
+  /** Al ontvangen SOL uit eerdere deelverkopen (telt mee bij "inzet eruit"). */
+  realizedSol?: number;
+  /** Resterende tokens (hele tokens). */
+  remainingTokens: number;
+  /** Al uitgevoerde niveaus. */
+  done: string[];
+}
+
+/** Marge voor fees en impact bij "inzet eruit": iets meer verkopen dan de inleg puur op marktprijs. */
+export const INITIAL_FEE_MARGIN = 1.04;
+
+/**
+ * Pure check voor gedeeltelijke verkopen. Geeft het eerstvolgende niveau dat geraakt is,
+ * of null. "Inzet eruit" gaat vóór de gedeeltelijke take-profit-niveaus; niveaus gaan op
+ * volgorde van winst-%. Per aanroep maximaal één deelverkoop.
+ */
+export function evaluatePartial(p: PartialInput, priceSol: number | null, exits: Settings['exits']): PartialExit | null {
+  if (priceSol === null || priceSol <= 0 || p.entryPriceSol <= 0 || p.remainingTokens <= 0) return null;
+  const pnlPct = (priceSol / p.entryPriceSol - 1) * 100;
+  // Kleine tolerantie tegen afrondingsfouten (instap 1,0000000000000001e-7 → +99,9999999%)
+  const hit = (pct: number) => pnlPct >= pct - 1e-6;
+  const ti = exits.takeInitial;
+  if (ti.enabled && !p.done.includes('init') && hit(ti.pct)) {
+    // Wat al terug is uit eerdere deelverkopen telt mee; is de inleg al terug, dan alleen afvinken (fraction 0)
+    const need = Math.max(0, p.entrySol * INITIAL_FEE_MARGIN - (p.realizedSol ?? 0));
+    const value = p.remainingTokens * priceSol;
+    return { key: 'init', kind: 'INIT', fraction: Math.min(1, need / value) };
+  }
+  const ptp = exits.partialTakeProfit;
+  if (ptp.enabled) {
+    const levels = [...ptp.levels].sort((a, b) => a.pct - b.pct);
+    for (const l of levels) {
+      const key = `tp${l.pct}`;
+      if (p.done.includes(key) || !hit(l.pct)) continue;
+      return { key, kind: 'PTP', fraction: Math.min(1, l.sellPct / 100) };
+    }
+  }
   return null;
 }

@@ -1,6 +1,8 @@
 import { fmt, signClass } from '../api';
 import type { OpenPositionView } from '../types';
 
+const restPct = (p: OpenPositionView) => (1 - Number(BigInt(p.tokens_sold_raw || '0')) / Number(BigInt(p.token_amount_raw))) * 100;
+
 const short = (m: string) => `${m.slice(0, 4)}…${m.slice(-4)}`;
 
 export function TokenCell({ mint, symbol }: { mint: string; symbol: string | null }) {
@@ -37,6 +39,7 @@ export function Positions({ positions, max, onSell }: { positions: OpenPositionV
                 <th className="num">P&L %</th>
                 <th className="num">P&L SOL</th>
                 <th className="num">Open</th>
+                <th className="num" title="Al ontvangen SOL uit deelverkopen en het resterende deel van de positie">Deelverkoop</th>
                 <th>Status</th>
                 <th />
               </tr>
@@ -54,6 +57,17 @@ export function Positions({ positions, max, onSell }: { positions: OpenPositionV
                   <td className={`num ${signClass(p.livePnlPct)}`}>{fmt.pct(p.livePnlPct)}</td>
                   <td className={`num ${signClass(p.livePnlSol)}`}>{fmt.sol(p.livePnlSol)}</td>
                   <td className="num">{fmt.dur(p.heldMin)}</td>
+                  <td className="num" title={p.partial_done ? `Uitgevoerd: ${p.partial_done}` : ''}>
+                    {p.realized_sol > 0 ? (
+                      <>
+                        {fmt.solPlain(p.realized_sol)} terug
+                        <br />
+                        <span className="muted">rest {fmt.pctPlain(restPct(p))}</span>
+                      </>
+                    ) : (
+                      '–'
+                    )}
+                  </td>
                   <td>
                     {p.unmonitored && p.status === 'open' && (
                       <span className="pill pill-warn" title="Geen verse prijs: stop-loss en andere exit-regels kunnen nu niet op tijd vuren">

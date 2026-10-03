@@ -54,8 +54,37 @@ CREATE TABLE IF NOT EXISTS positions (
   post_watch_until INTEGER,        -- tot wanneer de prijs na de exit gevolgd wordt
   -- Experimenthygiëne
   config_hash TEXT,                -- hash van de instellingen bij aankoop (zie tabel settings_versions)
-  run_id TEXT                      -- opstart van de bot (= naam van het logbestand)
+  run_id TEXT,                     -- opstart van de bot (= naam van het logbestand)
+  -- Gedeeltelijke verkopen (inzet eruit / deel take-profit)
+  tokens_sold_raw TEXT NOT NULL DEFAULT '0', -- al verkochte tokens (bigint als string)
+  realized_sol REAL NOT NULL DEFAULT 0,       -- SOL ontvangen uit deelverkopen
+  partial_done TEXT NOT NULL DEFAULT '',      -- uitgevoerde niveaus, kommagescheiden (init, tp50, ...)
+  -- Tokendata op het moment van aankoop
+  entry_age_min REAL,
+  entry_mcap_usd REAL,
+  entry_vol_total_usd REAL,
+  entry_vol10m_usd REAL,
+  entry_price_change_pct REAL,
+  entry_holders INTEGER,          -- aantal holders (zonder bonding curve); bij RPC max. 19 = ondergrens
+  entry_top10_pct REAL,
+  entry_creator_pct REAL,
+  entry_rt_loss_pct REAL
 );
+
+CREATE TABLE IF NOT EXISTS position_sells (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL,              -- 'INIT' | 'PTP' | eindverkoop: 'SL' | 'TP' | 'TRAIL' | ...
+  level_key TEXT,
+  tokens_raw TEXT NOT NULL,
+  sol REAL NOT NULL,               -- netto ontvangen SOL
+  price_sol REAL,                  -- effectieve verkoopprijs per token
+  trigger_price_sol REAL,
+  pnl_pct_at_trigger REAL,
+  sig TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sells_position ON position_sells(position_id);
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(closed_at);
@@ -94,6 +123,18 @@ export function openDb(file: string): Db {
     ['post_watch_until', 'INTEGER'],
     ['config_hash', 'TEXT'],
     ['run_id', 'TEXT'],
+    ['tokens_sold_raw', "TEXT NOT NULL DEFAULT '0'"],
+    ['realized_sol', 'REAL NOT NULL DEFAULT 0'],
+    ['partial_done', "TEXT NOT NULL DEFAULT ''"],
+    ['entry_age_min', 'REAL'],
+    ['entry_mcap_usd', 'REAL'],
+    ['entry_vol_total_usd', 'REAL'],
+    ['entry_vol10m_usd', 'REAL'],
+    ['entry_price_change_pct', 'REAL'],
+    ['entry_holders', 'INTEGER'],
+    ['entry_top10_pct', 'REAL'],
+    ['entry_creator_pct', 'REAL'],
+    ['entry_rt_loss_pct', 'REAL'],
   ];
   for (const [name, type] of added) if (!cols.has(name)) db.exec(`ALTER TABLE positions ADD COLUMN ${name} ${type}`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_positions_watch ON positions(post_watch_until)');

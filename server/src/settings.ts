@@ -84,6 +84,25 @@ export const settingsSchema = z.object({
         },
         true,
       ).prefault({}),
+      /**
+       * Inzet eruit halen: bij deze winst zoveel tokens verkopen dat de inleg (incl. fees) terug is.
+       * De rest blijft staan ("free ride") en volgt verder de overige exit-regels.
+       */
+      takeInitial: toggle({ pct: z.number().min(5).max(10_000).default(100) }).prefault({}),
+      /** Gedeeltelijke take-profit: per niveau één keer een deel van de resterende positie verkopen. */
+      partialTakeProfit: toggle({
+        levels: z
+          .array(
+            z.object({
+              /** Winst t.o.v. de instapprijs waarop dit niveau verkoopt. */
+              pct: z.number().positive().max(10_000),
+              /** % van de op dat moment resterende tokens dat verkocht wordt. */
+              sellPct: z.number().min(1).max(100),
+            }),
+          )
+          .max(5)
+          .default([{ pct: 50, sellPct: 50 }]),
+      }).prefault({}),
     })
     .prefault({}),
   safety: z
