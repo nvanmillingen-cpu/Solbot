@@ -53,6 +53,16 @@ function fakeConn(o: FakeOpts) {
       d.writeBigUInt64LE(o.creatorRaw ?? 0n, 64);
       return { data: d };
     },
+    // Exacte holdertelling: één wallet (de maker) naast de curve
+    getProgramAccounts: async () => {
+      const row = (owner: PublicKey, amount: bigint) => {
+        const d = Buffer.alloc(40);
+        owner.toBuffer().copy(d, 0);
+        d.writeBigUInt64LE(amount, 32);
+        return { account: { data: d } };
+      };
+      return [row(bondingCurvePda(MINT), 700_000_000_000_000n), row(CREATOR, 50_000_000_000_000n)];
+    },
     getTokenLargestAccounts: async () => {
       calls.largest++;
       return { value: o.largest ? o.largest() : [{ address: curveAta, amount: '700000000000000' }, { address: CREATOR, amount: '50000000000000' }] };
@@ -97,6 +107,7 @@ describe('preBuyChecks', () => {
     expect(r.reasons).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.top10Pct).toBeCloseTo(5, 6); // alleen de 5% van de maker, niet de 70% van de curve
+    expect(r.holders).toBe(1); // exacte telling, zonder de curve
   });
 
   it('top-10: herhaalt bij 429 en slaagt bij de derde poging', async () => {
@@ -216,5 +227,42 @@ describe('probeTop10Support (opstarttest)', () => {
 
   it('succesvol antwoord telt als ondersteund', async () => {
     expect(await probeTop10Support(conn(() => ({ value: [] })))).toBe(true);
+  });
+});
+
+describe('exact aantal holders (getProgramAccounts i.p.v. max. 20 accounts)', async () => {
+  const { holdersFromAccounts, countHolders } = await import('../src/core/safety.js');
+  const { bondingCurvePda } = await import('../src/market/bondingCurve.js');
+
+  it('telt unieke eigenaren met saldo, zonder de bonding curve', () => {
+    const curve = 'CURVE';
+    const rows = [
+      { owner: curve, amount: 900n },
+      ...Array.from({ length: 36 }, (_, i) => ({ owner: `W${i}`, amount: 10n })),
+      { owner: 'W0', amount: 5n }, // tweede account van dezelfde wallet
+      { owner: 'LEEG', amount: 0n },
+    ];
+    expect(holdersFromAccounts(rows, curve)).toBe(36);
+  });
+
+  it('graduated: het grootste account (pool) telt niet mee', () => {
+    expect(holdersFromAccounts([{ owner: 'POOL', amount: 900n }, { owner: 'A', amount: 5n }, { owner: 'B', amount: 1n }], null)).toBe(2);
+  });
+
+  it('countHolders gebruikt getProgramAccounts en is exact (77Gh28: 37 i.p.v. 19)', async () => {
+    const mint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const acc = (owner: Buffer, amount: bigint) => {
+      const d = Buffer.alloc(40);
+      owner.copy(d, 0);
+      d.writeBigUInt64LE(amount, 32);
+      return { pubkey: null, account: { data: d } };
+    };
+    const curveOwner = bondingCurvePda(mint).toBuffer();
+    const wallets = Array.from({ length: 37 }, (_, i) => acc(Buffer.alloc(32, i + 1), 1000n));
+    const conn = {
+      getAccountInfo: async () => ({ owner: { toBase58: () => 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' } }),
+      getProgramAccounts: async () => [acc(curveOwner, 10n ** 15n), ...wallets],
+    };
+    expect(await countHolders(conn as never, mint, false)).toEqual({ count: 37, exact: true });
   });
 });

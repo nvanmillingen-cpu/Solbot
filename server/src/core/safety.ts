@@ -1,6 +1,6 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { SOL_MINT } from '../config.js';
-import { logger } from '../logger.js';
+import { logger, shouldLog } from '../logger.js';
 import { bondingCurvePda, curveBuyQuote, curvePriceSol, curveSellQuote, fetchCurves, type CurveState } from '../market/bondingCurve.js';
 import { jupQuote } from '../market/jupiter.js';
 import type { Settings } from '../settings.js';
@@ -169,6 +169,66 @@ export async function top10Details(conn: Connection, mint: string, m: MintInfo, 
   return { pct: top10FromAccounts(accounts, BigInt(m.parsed.supply), exclude), holders };
 }
 
+const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+/** mint → token-programma (SPL Token of Token-2022); verandert nooit. */
+const programCache = new Map<string, PublicKey>();
+
+export interface HolderCount {
+  count: number;
+  /** false = ondergrens (fallback via getTokenLargestAccounts, max. 20 accounts). */
+  exact: boolean;
+}
+
+/** Telt unieke eigenaren met saldo > 0, zonder de bonding curve (of bij graduated het grootste account = de pool). */
+export function holdersFromAccounts(accounts: { owner: string; amount: bigint }[], excludeOwner: string | null): number {
+  const withBalance = accounts.filter((a) => a.amount > 0n);
+  let rest = excludeOwner ? withBalance.filter((a) => a.owner !== excludeOwner) : withBalance;
+  if (!excludeOwner && rest.length) {
+    const biggest = rest.reduce((m, a) => (a.amount > m.amount ? a : m));
+    rest = rest.filter((a) => a !== biggest);
+  }
+  return new Set(rest.map((a) => a.owner)).size;
+}
+
+/**
+ * Exact aantal holders via getProgramAccounts op het token-programma, gefilterd op de mint
+ * (alleen eigenaar + saldo worden opgehaald, ~80 ms op Helius). getTokenLargestAccounts geeft
+ * maximaal 20 accounts, waardoor een minimum van 20+ holders nooit gehaald kon worden.
+ * Fallback als de RPC getProgramAccounts weigert: de grootste 20 accounts (ondergrens).
+ */
+export async function countHolders(conn: Connection, mint: string, graduated: boolean, tokenProgram?: PublicKey): Promise<HolderCount | null> {
+  const mintKey = new PublicKey(mint);
+  const excludeOwner = graduated ? null : bondingCurvePda(mint).toBase58();
+  try {
+    let program = tokenProgram ?? programCache.get(mint);
+    if (!program) {
+      const info = await conn.getAccountInfo(mintKey, 'confirmed');
+      if (!info) return null;
+      program = info.owner;
+    }
+    programCache.set(mint, program);
+    const filters: ({ memcmp: { offset: number; bytes: string } } | { dataSize: number })[] = [{ memcmp: { offset: 0, bytes: mint } }];
+    // SPL Token-accounts zijn altijd 165 bytes; Token-2022-accounts kunnen extensies hebben
+    if (program.toBase58() === SPL_TOKEN_PROGRAM) filters.push({ dataSize: 165 });
+    const accs = await noRetry(conn).getProgramAccounts(program, { commitment: 'confirmed', dataSlice: { offset: 32, length: 40 }, filters });
+    const rows = accs.map((a) => {
+      const d = Buffer.from(a.account.data);
+      return { owner: new PublicKey(d.subarray(0, 32)).toBase58(), amount: d.readBigUInt64LE(32) };
+    });
+    return { count: holdersFromAccounts(rows, excludeOwner), exact: true };
+  } catch (e) {
+    const l = shouldLog('holders-gpa', 5 * 60_000);
+    if (l.ok) logger.warn({ err: String(e).slice(0, 160), overgeslagen: l.suppressed }, 'exact aantal holders niet op te halen (getProgramAccounts); terugval op max. 20 grootste accounts');
+  }
+  const largest = await largestAccounts(conn, mint, 1);
+  if (!largest) return null;
+  const program = tokenProgram ?? programCache.get(mint);
+  const curveAta = !graduated && program ? associatedTokenAddress(bondingCurvePda(mint), mintKey, program).toBase58() : null;
+  const nonZero = largest.filter((a) => BigInt(a.amount) > 0n);
+  const count = curveAta ? nonZero.filter((a) => (typeof a.address === 'string' ? a.address : a.address.toBase58()) !== curveAta).length : Math.max(0, nonZero.length - 1);
+  return { count, exact: nonZero.length < 20 };
+}
+
 export function checkMintAuthorities(mi: MintInfo): { ok: boolean; reasons: string[] } {
   const m = mi.parsed;
   const reasons: string[] = [];
@@ -295,6 +355,10 @@ export async function preBuyChecks(
       return { ok: false, reasons: [`top-10 holders bezitten ${top10Pct.toFixed(1)}% > ${safety.maxTop10Pct.pct}%`], permanent: false, creatorPct, top10Pct, holders };
     }
   }
+
+  // Exact aantal holders (voor de tradelog); top-10-call geeft er max. 19
+  const hc = await countHolders(conn, m.mint, !onCurve, mi.tokenProgram).catch(() => null);
+  if (hc) holders = hc.count;
 
   let roundTripLossPct: number | undefined;
   if (safety.sellQuoteCheck) {

@@ -16,7 +16,7 @@ const REASONS: Record<string, string> = {
   PTP: 'Deel take-profit',
 };
 
-export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey: string; onReset: (mode: string) => void }) {
+export function Trades({ mode, refreshKey, onReset, onResetLogs }: { mode: string; refreshKey: string; onReset: (mode: string) => void; onResetLogs: () => void }) {
   const [rows, setRows] = useState<PositionRow[]>([]);
   const [filterMode, setFilterMode] = useState<string>(mode);
   useEffect(() => setFilterMode(mode), [mode]);
@@ -41,6 +41,15 @@ export function Trades({ mode, refreshKey, onReset }: { mode: string; refreshKey
           }}
         >
           Reset statistieken
+        </button>
+        <button
+          className="btn btn-small"
+          title="Verwijdert alle logbestanden van de bot. Trades en statistieken blijven staan."
+          onClick={() => {
+            if (confirm('Alle logbestanden van de bot verwijderen?\n\nDit kan niet ongedaan gemaakt worden. Trades, statistieken en instellingen blijven staan; de bot logt daarna verder in een leeg bestand.')) onResetLogs();
+          }}
+        >
+          Reset logs
         </button>
         <div className="seg" role="group" aria-label="Modus">
           {['paper', 'live', 'all'].map((m) => (

@@ -81,3 +81,26 @@ export function shouldLog(key: string, intervalMs = 60_000, now = Date.now()): {
   lastLogged.set(key, { at: now, suppressed: 0 });
   return { ok: true, suppressed };
 }
+
+/**
+ * "Reset logs": verwijdert alle logbestanden van de bot in de logmap. Het bestand van de
+ * lopende run staat nog open en wordt daarom leeggemaakt in plaats van verwijderd.
+ * Ook de logregels in het dashboard worden gewist.
+ */
+export function resetLogs(): { deleted: number; failed: string[] } {
+  let deleted = 0;
+  const failed: string[] = [];
+  for (const name of fs.readdirSync(config.logDir)) {
+    if (!/^solbot.*\.log$/.test(name)) continue;
+    const file = path.join(config.logDir, name);
+    try {
+      if (file === logFile) fs.truncateSync(file, 0);
+      else fs.unlinkSync(file);
+      deleted++;
+    } catch {
+      failed.push(name);
+    }
+  }
+  recent.splice(0, recent.length);
+  return { deleted, failed };
+}

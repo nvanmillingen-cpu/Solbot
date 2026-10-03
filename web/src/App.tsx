@@ -113,6 +113,12 @@ export function App() {
                   setResetCount((n) => n + 1);
                 })
               }
+              onResetLogs={() =>
+                run(async () => {
+                  const r = await api.post<{ deleted: number; failed: string[] }>('/api/logs/reset');
+                  if (r.failed.length) throw new Error(`Niet alle logbestanden konden verwijderd worden: ${r.failed.join(', ')}`);
+                })
+              }
             />
           </>
         )}

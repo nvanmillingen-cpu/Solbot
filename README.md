@@ -80,6 +80,8 @@ Statistieken en grafieken tonen standaard de huidige modus (paper of live). In d
 
 **Statistieken resetten**: klik in de tradehistorie op **Reset statistieken**. Dit geldt voor de modus die daar geselecteerd is (paper, live of alles). Gesloten trades worden gearchiveerd, niet verwijderd: ze tellen niet meer mee in statistieken en grafieken, maar staan nog in de database. Instellingen en open posities blijven ongewijzigd. Het logbestand leegmaken reset de statistieken niet: die staan in `data/solbot.db`.
 
+**Logs resetten**: klik in de tradehistorie op **Reset logs** (rechts van *Reset statistieken*). Na bevestiging verwijdert de bot **alle** logbestanden in `logs/`. Dat kan niet ongedaan gemaakt worden. Het logbestand van de lopende run wordt leeggemaakt, en de bot logt daarin gewoon verder. Trades, statistieken en instellingen blijven staan.
+
 ## Van paper naar live
 
 1. **Draai eerst een tijd in paper mode** en kijk of je filters en exit-regels zinnig presteren. Paper-fills gebruiken echte Jupiter-quotes (inclusief fees en price impact), maar in werkelijkheid ben je trager en zijn er meer kapers op de kust. Live presteert vrijwel altijd slechter dan paper.
@@ -166,7 +168,7 @@ In het tabblad *Kandidaten* zie je per token welke bron gebruikt is.
 ### Holders
 
 - **Met PumpPortal API-sleutel**: het aantal wallets met een positief saldo, berekend uit de trades.
-- **Zonder sleutel**: via RPC `getTokenLargestAccounts`. **De publieke Solana-RPC blokkeert deze call meestal (fout 429)**: dan is het aantal holders onbekend en keurt het filter alles af. Daarom staat het holders-filter standaard uit. Zet het alleen aan met een eigen RPC (Helius/QuickNode) of een PumpPortal-sleutel. Ook dan geeft de RPC **maximaal 20 accounts**, dus de bot kan alleen "minstens N holders" vaststellen voor N ≤ 19. Een minimum van 20 of hoger haalt een token zonder sleutel nooit. Deze check gebeurt alleen voor tokens die al aan alle andere filters voldoen, om RPC-calls te sparen.
+- **Zonder sleutel**: **exact** via RPC `getProgramAccounts` op het token-programma, gefilterd op de mint. Er worden alleen eigenaar en saldo opgehaald (~80–200 ms op Helius). Geteld worden unieke wallets met saldo > 0, zonder de bonding curve (bij graduated tokens zonder het grootste account, de pool). Vroeger gebruikte de bot `getTokenLargestAccounts`, maar die geeft **maximaal 20 accounts**: elk token bleef dan op "19+" steken en een minimum van 20 of hoger werd nooit gehaald. **Vereist een eigen RPC** (Helius of QuickNode). Weigert de RPC `getProgramAccounts`, dan valt de bot terug op de 20 grootste accounts (ondergrens, getoond als "19+"). Deze check gebeurt alleen voor tokens die al aan alle andere filters voldoen, en hooguit één keer per minuut per token.
 
 ### Overige beperkingen
 
@@ -282,6 +284,7 @@ web/                    React + Vite + Recharts dashboard
 | GET | `/api/stats?range=24h\|7d\|all&mode=` | statistieken |
 | GET | `/api/pnl?range=24h\|7d\|all&mode=` | cumulatieve P&L-reeks |
 | GET | `/api/candidates` | gevolgde tokens + filterresultaten |
+| POST | `/api/logs/reset` | alle logbestanden verwijderen (huidige leegmaken) |
 | GET | `/api/trades.csv` | alle trades als CSV (MFE/MAE, config-hash, run-id) |
 | GET | `/api/settings/versions` | alle opgeslagen instellingenversies per config-hash |
 | WS | `/ws` | live state elke seconde |

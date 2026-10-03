@@ -155,3 +155,24 @@ describe('slaapstand-detectie', () => {
     expect(h.lastStallMs).toBe(5 * 60_000);
   });
 });
+
+describe('reset logs', () => {
+  it('verwijdert oude logbestanden, maakt het huidige leeg en laat andere bestanden staan', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { resetLogs, logFile, logger } = await import('../src/logger.js');
+    const dir = path.dirname(logFile);
+    const old = path.join(dir, 'solbot_2000-01-01_00-00-00.log');
+    const other = path.join(dir, 'notities.txt');
+    fs.writeFileSync(old, 'oud');
+    fs.writeFileSync(other, 'blijft');
+    fs.appendFileSync(logFile, 'regel\n');
+    logger.flush();
+    const r = resetLogs();
+    expect(r.failed).toEqual([]);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.statSync(logFile).size).toBe(0);
+    fs.unlinkSync(other);
+  });
+});

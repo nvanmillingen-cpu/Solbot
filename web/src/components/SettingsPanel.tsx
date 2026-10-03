@@ -210,7 +210,7 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
             ctx={ctx}
             path={['filters', 'minHolders']}
             label="Minimaal aantal holders"
-            hint="Zonder PumpPortal API-sleutel via RPC: telt max. 20 holders, en de publieke RPC blokkeert deze call vaak (dan wordt alles afgekeurd). Alleen aanzetten met eigen RPC of PumpPortal-sleutel."
+            hint="Exact aantal holders (unieke wallets met saldo, zonder bonding curve) via de RPC (getProgramAccounts). Vereist een eigen RPC zoals Helius; de publieke RPC weigert dit, dan wordt alleen een ondergrens (max. 19) gevonden."
           >
             <Num ctx={ctx} path={['filters', 'minHolders', 'count']} label="Minimaal" step="1" />
           </Toggle>

@@ -1,6 +1,7 @@
-import { PublicKey, type Connection } from '@solana/web3.js';
+import type { Connection } from '@solana/web3.js';
 import { logger, shouldLog } from '../logger.js';
 import { health } from './health.js';
+import { countHolders } from './safety.js';
 import type { PumpPortalFeed, NewTokenEvent, TradeEvent, MigrationEvent } from '../feed/pumpportal.js';
 import { RpcLogFeed } from '../feed/rpcLogs.js';
 import { curvePriceSol, fetchCurves } from '../market/bondingCurve.js';
@@ -213,18 +214,15 @@ export class TokenTracker {
     }
   }
 
-  /** Telt holders via RPC (max 20 grootste accounts → ondergrens). */
+  /** Telt holders exact via RPC (getProgramAccounts); terugval op de 20 grootste accounts (ondergrens). */
   async fetchHolders(mint: string): Promise<void> {
     const t = this.tokens.get(mint);
     if (!t) return;
     if (t.holdersRpc && Date.now() - t.holdersRpc.at < 60_000) return;
     try {
-      const res = await this.conn.getTokenLargestAccounts(new PublicKey(mint), 'confirmed');
-      const nonZero = res.value.filter((a) => Number(a.amount) > 0).length;
-      // Het grootste account is de bonding curve / pool zelf
-      t.holdersRpc = { count: Math.max(0, nonZero - 1), capped: res.value.length >= 20, at: Date.now() };
+      const h = await countHolders(this.conn, mint, t.graduated);
+      if (h) t.holdersRpc = { count: h.count, capped: !h.exact, at: Date.now() };
     } catch (e) {
-      // Publieke RPC's blokkeren getTokenLargestAccounts vaak (429); max. 1 waarschuwing per minuut
       if (Date.now() - this.lastHoldersWarn > 60_000) {
         this.lastHoldersWarn = Date.now();
         logger.warn({ err: String(e).slice(0, 150) }, 'holders niet op te halen via RPC; het holders-filter keurt dan alles af (gebruik een eigen RPC of zet het filter uit)');

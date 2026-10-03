@@ -11,7 +11,7 @@ import { computeStats, pnlSeries, rangeStart } from '../core/stats.js';
 import type { TokenTracker } from '../core/tracker.js';
 import type { PumpPortalFeed } from '../feed/pumpportal.js';
 import { health } from '../core/health.js';
-import { logFile, logger, recentLogs, runId, runStartedAt, stamp } from '../logger.js';
+import { logFile, logger, recentLogs, resetLogs, runId, runStartedAt, stamp } from '../logger.js';
 import { solUsdCached } from '../market/solPrice.js';
 import { top10Status } from '../core/safety.js';
 import type { SettingsStore } from '../settings.js';
@@ -127,6 +127,12 @@ export async function startServer(d: Deps) {
     const archived = d.positions.archiveClosed(mode);
     logger.info({ mode, archived }, 'statistieken gereset (gesloten trades gearchiveerd)');
     return { ok: true, archived };
+  });
+
+  app.post('/api/logs/reset', async () => {
+    const r = resetLogs();
+    logger.info({ verwijderd: r.deleted, mislukt: r.failed.length ? r.failed : undefined, run: runId }, 'logs gereset: alle logbestanden verwijderd, huidige run logt verder in een leeg bestand');
+    return { ok: true, ...r };
   });
 
   app.get('/api/trades', async (req) => {
