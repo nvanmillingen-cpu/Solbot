@@ -24,6 +24,12 @@ export interface Fill {
   executor: string;
   /** Marktprijs (on-chain curve) op het moment van de fill, voor slippage-analyse. */
   marketPriceSol?: number;
+  /** Moment van verzenden (paper: begin van de gesimuleerde transactie). */
+  sentAt?: number;
+  /** Moment van landen/bevestiging (paper: na de gesimuleerde vertraging). */
+  landedAt?: number;
+  /** Marktprijs (curve) op het moment van landen. */
+  landedMarketPriceSol?: number;
 }
 
 /** Uitwisselbare executor-laag: paper, Jupiter of PumpPortal. */

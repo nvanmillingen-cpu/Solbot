@@ -11,6 +11,9 @@ import type { TokenMetrics } from './metrics.js';
 import type { PositionManager } from './positions.js';
 import { health } from './health.js';
 import { preBuyChecks, probeTop10Support, top10Status } from './safety.js';
+import type { SkipLog } from './skipped.js';
+import { computeMomentum, evaluateMomentum, type Momentum } from './momentum.js';
+import { lastPrice } from './metrics.js';
 import { startOfToday } from './stats.js';
 import type { TokenTracker } from './tracker.js';
 
@@ -18,6 +21,13 @@ export interface Candidate {
   metrics: TokenMetrics;
   filter: FilterResult;
   status?: string;
+  /** Moment van de evaluatie (filters gehaald). */
+  evalAt?: number;
+}
+
+/** Korte, stabiele sleutel voor een afwijsreden (zonder getallen), voor de tabel skipped_tokens. */
+export function reasonKey(reason: string): string {
+  return reason.replace(/[-+]?[\d.,]+\s*%?/g, '#').replace(/\$#/g, '#').replace(/\s+/g, ' ').trim().slice(0, 60);
 }
 
 /** Orchestrator: evalueert kandidaten, bewaakt risicolimieten en koopt. */
@@ -42,6 +52,7 @@ export class Bot {
     private positions: PositionManager,
     private wallet: Wallet | null,
     private executorFor: (mode: 'paper' | 'live') => Executor | null,
+    private skipLog?: SkipLog,
   ) {
     if (kvGet(db, 'bot_running') === 'true') logger.info('bot stond aan vóór herstart; start bewust opnieuw via het dashboard');
   }
@@ -133,7 +144,7 @@ export class Bot {
       const candidates: Candidate[] = [];
       for (const m of all) {
         const filter = evaluateFilters(m, s.filters);
-        candidates.push({ metrics: m, filter });
+        candidates.push({ metrics: m, filter, evalAt: now });
       }
       // Voor dashboard: beste kandidaten eerst (meeste filters gehaald, dan volume)
       const score = (c: Candidate) => c.filter.checks.filter((x) => x.pass).length;
@@ -150,6 +161,7 @@ export class Bot {
         return;
       }
       this.lastBlockReason = '';
+      this.recordNearMisses(candidates);
 
       const eligible = candidates.filter((c) => {
         const cd = this.cooldown.get(c.metrics.mint);
@@ -170,10 +182,12 @@ export class Bot {
           if (!c.filter.pass) {
             const h = c.filter.checks.find((x) => x.key === 'minHolders');
             logger.info({ symbol: m.symbol, holders: h?.value, nodig: h?.required }, 'afgekeurd op holders');
+            this.skipLog?.record(m, { stage: 'holders', reasonKey: 'minHolders', reason: `holders ${h?.value} < ${h?.required}`, value: h?.value, required: h?.required, checks: c.filter.checks });
             this.cooldown.set(m.mint, Date.now() + 60_000);
             continue;
           }
         }
+        c.evalAt = Date.now();
         await this.tryBuy(c);
       }
     } catch (e) {
@@ -181,6 +195,29 @@ export class Bot {
     } finally {
       this.evaluating = false;
     }
+  }
+
+  /**
+   * Counterfactual: tokens die op precies één filter na gekocht zouden zijn, vastleggen (één keer
+   * per token en filter). Een onbekend aantal holders telt niet: dat wordt pas vlak voor kopen opgehaald.
+   */
+  private recordNearMisses(candidates: Candidate[]) {
+    if (!this.skipLog) return;
+    for (const c of candidates) {
+      if (c.filter.pass || this.positions.everBought(c.metrics.mint)) continue;
+      const failed = c.filter.checks.filter((x) => !x.pass);
+      if (failed.length !== 1) continue;
+      const f = failed[0];
+      if (f.key === 'minHolders' && c.metrics.holders === null) continue;
+      this.skipLog.record(c.metrics, { stage: 'filter', reasonKey: f.key, reason: `${f.label}: ${f.value} (nodig ${f.required})`, value: f.value, required: f.required, checks: c.filter.checks, momentum: this.momentumFor(c.metrics.mint, null, Date.now()) });
+    }
+  }
+
+  /** Momentum op dit moment (verse prijs als die er is, anders de laatst bekende). */
+  private momentumFor(mint: string, price: number | null, at: number): Momentum | null {
+    const t = this.tracker.tokens.get(mint);
+    if (!t) return null;
+    return computeMomentum(t.prices, price ?? lastPrice(t)?.priceSol ?? null, at);
   }
 
   private async tryBuy(c: Candidate) {
@@ -202,6 +239,18 @@ export class Bot {
     if (!safety.ok) {
       this.cooldown.set(m.mint, safety.permanent ? Infinity : Date.now() + 5 * 60_000);
       logger.info({ symbol: m.symbol, redenen: safety.reasons }, 'veiligheidscheck afgekeurd');
+      const reason = safety.reasons.join('; ') || 'onbekend';
+      this.skipLog?.record(m, { stage: 'veiligheid', reasonKey: reasonKey(safety.reasons[0] ?? 'onbekend'), reason, checks: c.filter.checks, top10Pct: safety.top10Pct, creatorPct: safety.creatorPct, holders: safety.holders, momentum: this.momentumFor(m.mint, safety.checkPriceSol ?? null, Date.now()) });
+      return;
+    }
+    // Momentum vlak vóór verzending, op de verse on-chain prijs uit de veiligheidscheck
+    const momentum = this.momentumFor(m.mint, safety.checkPriceSol ?? null, safety.checkAt ?? Date.now());
+    const mom = evaluateMomentum(momentum ?? { m60: null, m30: null, m10: null, m1: null }, s.filters.momentum);
+    if (!mom.ok) {
+      // Momentum verandert snel: na een korte pauze opnieuw beoordelen
+      this.cooldown.set(m.mint, Date.now() + 30_000);
+      logger.info({ symbol: m.symbol, momentum, redenen: mom.reasons }, 'afgekeurd op momentum');
+      this.skipLog?.record(m, { stage: 'momentum', reasonKey: reasonKey(mom.reasons[0]), reason: mom.reasons.join('; '), checks: c.filter.checks, top10Pct: safety.top10Pct, creatorPct: safety.creatorPct, holders: safety.holders, momentum });
       return;
     }
     const exec = this.executorFor(mode);
@@ -212,7 +261,7 @@ export class Bot {
       const fill = await exec.buy({
         mint: m.mint,
         solAmount: s.risk.solPerTrade,
-        slippagePct: s.general.slippagePct,
+        slippagePct: s.general.buySlippagePct,
         priorityFeeSol: s.general.priorityFeeSol,
         maxQuoteDeviationPct: s.safety.maxQuoteDeviationPct,
       });
@@ -227,6 +276,16 @@ export class Bot {
         top10Pct: safety.top10Pct ?? null,
         creatorPct: safety.creatorPct ?? null,
         rtLossPct: safety.roundTripLossPct ?? null,
+        // Tijdstempels en prijzen per stap: evaluatie → check → verzending → landing
+        evalAt: c.evalAt ?? null,
+        evalPriceSol: m.priceSol,
+        checkAt: safety.checkAt ?? null,
+        checkPriceSol: safety.checkPriceSol ?? null,
+        sentAt: fill.sentAt ?? null,
+        sentPriceSol: fill.marketPriceSol ?? safety.checkPriceSol ?? null,
+        landedAt: fill.landedAt ?? null,
+        landedPriceSol: fill.landedMarketPriceSol ?? null,
+        momentum,
       };
       const pos = this.positions.record({ mint: m.mint, symbol: m.symbol, name: m.name, mode, fill, graduated: m.graduated, configHash: this.store.hash(), entry });
       const r1 = (n: number | null | undefined, d = 1) => (n === null || n === undefined ? null : +n.toFixed(d));
@@ -249,6 +308,18 @@ export class Bot {
           top10Pct: entry.top10Pct === null ? 'n.v.t.' : r1(entry.top10Pct),
           makerPct: r1(entry.creatorPct),
           rtLossPct: r1(entry.rtLossPct),
+          momentum60sPct: momentum?.m60 ?? null,
+          momentum30sPct: momentum?.m30 ?? null,
+          momentum10sPct: momentum?.m10 ?? null,
+          momentum1sPct: momentum?.m1 ?? null,
+          // Waar ontstaat de instap-premie? Prijs per stap t.o.v. de evaluatieprijs, en de duur per stap
+          premieCheckPct: entry.evalPriceSol && entry.checkPriceSol ? r1((entry.checkPriceSol / entry.evalPriceSol - 1) * 100, 2) : null,
+          premieVerzendPct: entry.evalPriceSol && entry.sentPriceSol ? r1((entry.sentPriceSol / entry.evalPriceSol - 1) * 100, 2) : null,
+          premieLandingPct: entry.evalPriceSol && entry.landedPriceSol ? r1((entry.landedPriceSol / entry.evalPriceSol - 1) * 100, 2) : null,
+          premieFillPct: entry.evalPriceSol ? r1((pos.entry_price_sol / entry.evalPriceSol - 1) * 100, 2) : null,
+          evalNaarCheckMs: entry.evalAt && entry.checkAt ? entry.checkAt - entry.evalAt : null,
+          checkNaarVerzendMs: entry.checkAt && entry.sentAt ? entry.sentAt - entry.checkAt : null,
+          verzendNaarLandingMs: entry.sentAt && entry.landedAt ? entry.landedAt - entry.sentAt : null,
           sig: fill.signature,
         },
         'GEKOCHT',
@@ -257,6 +328,8 @@ export class Bot {
     } catch (e) {
       // Na een mislukte koop niet direct opnieuw proberen
       this.cooldown.set(m.mint, Date.now() + 10 * 60_000);
+      const msg = String(e instanceof Error ? e.message : e);
+      this.skipLog?.record(m, { stage: 'koop', reasonKey: reasonKey(msg), reason: msg, checks: c.filter.checks, top10Pct: safety.top10Pct, creatorPct: safety.creatorPct, holders: safety.holders, momentum });
       logger.error({ symbol: m.symbol, err: String(e) }, 'koop mislukt');
     }
   }

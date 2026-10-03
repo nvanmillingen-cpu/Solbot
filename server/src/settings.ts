@@ -14,7 +14,10 @@ export const settingsSchema = z.object({
       paperMode: z.boolean().default(true),
       /** Welke executor live transacties bouwt; de andere is fallback. */
       executor: z.enum(['jupiter', 'pumpportal']).default('jupiter'),
-      slippagePct: z.number().min(0.1).max(99).default(15),
+      /** Max. slippage bij aankoop (% t.o.v. de quote). */
+      buySlippagePct: z.number().min(0.1).max(99).default(15),
+      /** Max. slippage bij verkoop; bij herhaalde mislukte verkoop komt er per poging 5% bij (max. 50%). */
+      sellSlippagePct: z.number().min(0.1).max(99).default(15),
       priorityFeeSol: pos.max(0.1).default(0.0005),
       maxTxRetries: z.number().int().min(0).max(10).default(2),
       /** Windows: voorkom slaapstand zolang de bot draait (anders geen stop-loss-bewaking). */
@@ -60,6 +63,18 @@ export const settingsSchema = z.object({
       minAge: toggle({ minutes: pos.default(2) }, true).prefault({}),
       maxAge: toggle({ minutes: pos.default(30) }, true).prefault({}),
       minHolders: toggle({ count: z.number().int().min(0).default(15) }).prefault({}),
+      /**
+       * Momentum vlak vóór de aankoop: minimale prijsverandering per venster (uptrend, geen reversal)
+       * en een maximum over 60 s (niet de top kopen). Wordt altijd gelogd, ook als het filter uit staat.
+       */
+      momentum: toggle({
+        min60sPct: z.number().min(-100).max(10_000).default(0),
+        min30sPct: z.number().min(-100).max(10_000).default(0),
+        min10sPct: z.number().min(-100).max(10_000).default(0),
+        min1sPct: z.number().min(-100).max(10_000).default(0),
+        /** Boven deze stijging in de laatste 60 s niet kopen. 0 = geen maximum. */
+        max60sPct: pos.max(10_000).default(70),
+      }).prefault({}),
     })
     .prefault({}),
   exits: z
@@ -173,6 +188,27 @@ export function configHash(s: Settings): string {
   return createHash('sha256').update(JSON.stringify({ ...s, general })).digest('hex').slice(0, 8);
 }
 
+/** Verschillen tussen twee instellingen als {"exits.stopLoss.pct": "15 → 20"}. */
+export function diffSettings(a: unknown, b: unknown, prefix = '', out: Record<string, string> = {}): Record<string, string> {
+  const isObj = (v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (isObj(a) && isObj(b)) {
+    const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
+    for (const k of keys) diffSettings((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], prefix ? `${prefix}.${k}` : k, out);
+  } else if (JSON.stringify(a) !== JSON.stringify(b)) out[prefix] = `${JSON.stringify(a)} → ${JSON.stringify(b)}`;
+  return out;
+}
+
+/** Oude opgeslagen instellingen omzetten: één `slippagePct` wordt aankoop- én verkoopslippage. */
+export function migrateSettings(raw: unknown): unknown {
+  const g = (raw as { general?: Record<string, unknown> })?.general;
+  if (g && typeof g.slippagePct === 'number') {
+    g.buySlippagePct ??= g.slippagePct;
+    g.sellSlippagePct ??= g.slippagePct;
+    delete g.slippagePct;
+  }
+  return raw;
+}
+
 type Listener = (s: Settings) => void;
 
 export class SettingsStore {
@@ -183,7 +219,7 @@ export class SettingsStore {
     const row = db.prepare('SELECT json FROM settings WHERE id = 1').get() as { json: string } | undefined;
     let loaded: Settings;
     try {
-      loaded = settingsSchema.parse(row ? JSON.parse(row.json) : {});
+      loaded = settingsSchema.parse(migrateSettings(row ? JSON.parse(row.json) : {}));
     } catch {
       loaded = defaultSettings();
     }

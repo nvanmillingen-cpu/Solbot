@@ -61,6 +61,7 @@ export class PaperExecutor implements Executor {
    * instapprijs/marktprijs bevat fees, impact én de koersbeweging tijdens de vertraging.
    */
   async buy(r: BuyRequest): Promise<Fill> {
+    const sentAt = Date.now();
     const lamports = BigInt(Math.round(r.solAmount * 1e9));
     const fees = this.fees(r.priorityFeeSol);
     const { latencyMs } = this.sim();
@@ -75,10 +76,11 @@ export class PaperExecutor implements Executor {
     // Transactie "landt" pas na de vertraging: dan geldt de curvestand van dat moment
     const curve = latencyMs > 0 && curve0 ? (await sleep(latencyMs), await this.curve(r.mint)) : curve0;
     const curveOut = curve ? curveBuyQuote(curve, lamports) : null;
+    const timing = { sentAt, landedAt: Date.now(), landedMarketPriceSol: curve ? curvePriceSol(curve) : undefined };
     if (curveOut !== null && curveOut > 0n) {
-      return { solAmount: r.solAmount + fees, tokenAmountRaw: curveOut, decimals: 6, executor: 'paper/curve', marketPriceSol: market };
+      return { solAmount: r.solAmount + fees, tokenAmountRaw: curveOut, decimals: 6, executor: 'paper/curve', marketPriceSol: market, ...timing };
     }
-    if (jupOut !== null) return { solAmount: r.solAmount + fees, tokenAmountRaw: jupOut, decimals: 6, executor: 'paper/jupiter', marketPriceSol: market };
+    if (jupOut !== null) return { solAmount: r.solAmount + fees, tokenAmountRaw: jupOut, decimals: 6, executor: 'paper/jupiter', marketPriceSol: market, ...timing };
     const p = this.src.lastPrice(r.mint);
     if (p) {
       const tokens = (r.solAmount / p) * (1 - r.slippagePct / 200);
@@ -88,6 +90,7 @@ export class PaperExecutor implements Executor {
   }
 
   async sell(r: SellRequest): Promise<Fill> {
+    const sentAt = Date.now();
     const fees = this.fees(r.priorityFeeSol);
     const { latencyMs } = this.sim();
     if (latencyMs > 0) await sleep(latencyMs);
@@ -122,6 +125,6 @@ export class PaperExecutor implements Executor {
         via = 'paper/none';
       }
     }
-    return { solAmount: Math.max(0, gross - fees), tokenAmountRaw: r.tokenAmountRaw, decimals: r.decimals, executor: via, marketPriceSol: market };
+    return { solAmount: Math.max(0, gross - fees), tokenAmountRaw: r.tokenAmountRaw, decimals: r.decimals, executor: via, marketPriceSol: market, sentAt, landedAt: Date.now(), landedMarketPriceSol: market };
   }
 }

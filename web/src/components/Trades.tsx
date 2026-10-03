@@ -29,9 +29,23 @@ export function Trades({ mode, refreshKey, onReset, onResetLogs }: { mode: strin
       <div className="card-head">
         <h2>Tradehistorie</h2>
         <div className="head-actions">
-        <a className="btn btn-small" href="/api/trades.csv" download title="Alle trades (ook gearchiveerd) met MFE/MAE, config-hash en run-id, voor Excel">
-          Download CSV
-        </a>
+        <details className="csv-menu">
+          <summary className="btn btn-small">Download CSV ▾</summary>
+          <div className="csv-menu-list" role="menu">
+            <a href="/api/trades.csv" download role="menuitem" title="Alle trades (ook gearchiveerd): MFE/MAE, koerspad, tijdstempels per stap, tokendata, config-hash en run-id">
+              Trades
+            </a>
+            <a href="/api/verkopen.csv" download role="menuitem" title="Elke (deel)verkoop apart met tijdstip, prijs en eigen P&L">
+              Verkopen (incl. deelverkopen)
+            </a>
+            <a href="/api/overgeslagen.csv" download role="menuitem" title="Afgewezen tokens met reden, waarden en de koers daarna">
+              Overgeslagen tokens
+            </a>
+            <a href="/api/instellingen.csv" download role="menuitem" title="Volledige instellingen per config-hash">
+              Instellingen per config-hash
+            </a>
+          </div>
+        </details>
         <button
           className="btn btn-small"
           disabled={rows.length === 0}

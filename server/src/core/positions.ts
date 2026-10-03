@@ -66,6 +66,23 @@ export interface PositionRow {
   entry_top10_pct: number | null;
   entry_creator_pct: number | null;
   entry_rt_loss_pct: number | null;
+  eval_at: number | null;
+  eval_price_sol: number | null;
+  check_at: number | null;
+  check_price_sol: number | null;
+  sent_at: number | null;
+  sent_price_sol: number | null;
+  landed_at: number | null;
+  landed_price_sol: number | null;
+  path_json: string | null;
+  secs_above_20: number;
+  secs_above_50: number;
+  first_20_at: number | null;
+  first_50_at: number | null;
+  mom_60s_pct: number | null;
+  mom_30s_pct: number | null;
+  mom_10s_pct: number | null;
+  mom_1s_pct: number | null;
 }
 
 /** Tokendata op het moment van aankoop (voor analyse per trade). */
@@ -79,6 +96,34 @@ export interface EntryInfo {
   top10Pct: number | null;
   creatorPct: number | null;
   rtLossPct: number | null;
+  evalAt?: number | null;
+  evalPriceSol?: number | null;
+  checkAt?: number | null;
+  checkPriceSol?: number | null;
+  sentAt?: number | null;
+  sentPriceSol?: number | null;
+  landedAt?: number | null;
+  landedPriceSol?: number | null;
+  momentum?: { m60: number | null; m30: number | null; m10: number | null; m1: number | null } | null;
+}
+
+/** Momenten (seconden na de fill) waarop de koers wordt vastgelegd. */
+export const PATH_MARKS = [1, 3, 5, 10, 20, 30];
+
+/**
+ * Vult het koerspad aan met de eerste prijs die op of na elk meetmoment binnenkomt.
+ * Geeft null terug als er niets veranderde. Opslag: {"5": {"p": prijs, "t": werkelijke seconden}}.
+ */
+export function updatePath(json: string | null, startAt: number, price: number, now: number): string | null {
+  const path = (json ? JSON.parse(json) : {}) as Record<string, { p: number; t: number }>;
+  const elapsed = (now - startAt) / 1000;
+  let changed = false;
+  for (const m of PATH_MARKS) {
+    if (path[m] || elapsed < m) continue;
+    path[m] = { p: price, t: +elapsed.toFixed(2) };
+    changed = true;
+  }
+  return changed ? JSON.stringify(path) : null;
 }
 
 export interface OpenPositionView extends PositionRow {
@@ -136,6 +181,8 @@ export class PositionManager {
   private watching = new Map<number, string>();
   /** Na een mislukte deelverkoop: niet vóór dit tijdstip opnieuw proberen. */
   private partialRetryAt = new Map<number, number>();
+  /** Laatste prijswaarneming per positie, voor de tijd boven +20% / +50%. */
+  private lastObs = new Map<number, { at: number; pnlPct: number }>();
 
   constructor(
     private db: Db,
@@ -215,6 +262,7 @@ export class PositionManager {
       this.db
         .prepare('UPDATE positions SET last_price_sol = ?, last_price_at = ?, peak_price_sol = ?, peak_price_at = ?, min_price_sol = ?, min_price_at = ? WHERE id = ?')
         .run(price, now, r.peak_price_sol, r.peak_price_at, r.min_price_sol, r.min_price_at, r.id);
+      this.trackPathAndThresholds(r, price, now);
     }
     // Eerder getriggerde exit die mislukte: opnieuw proberen (failsafe)
     if (r.pending_exit) {
@@ -272,8 +320,10 @@ export class PositionManager {
           opened_at, peak_price_sol, last_price_sol, last_price_at, buy_sig, graduated, entry_market_price_sol,
           peak_price_at, min_price_sol, min_price_at, config_hash, run_id,
           entry_age_min, entry_mcap_usd, entry_vol_total_usd, entry_vol10m_usd, entry_price_change_pct,
-          entry_holders, entry_top10_pct, entry_creator_pct, entry_rt_loss_pct)
-         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          entry_holders, entry_top10_pct, entry_creator_pct, entry_rt_loss_pct,
+          eval_at, eval_price_sol, check_at, check_price_sol, sent_at, sent_price_sol, landed_at, landed_price_sol,
+          mom_60s_pct, mom_30s_pct, mom_10s_pct, mom_1s_pct)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         p.mint,
@@ -306,6 +356,18 @@ export class PositionManager {
         p.entry?.top10Pct ?? null,
         p.entry?.creatorPct ?? null,
         p.entry?.rtLossPct ?? null,
+        p.entry?.evalAt ?? null,
+        p.entry?.evalPriceSol ?? null,
+        p.entry?.checkAt ?? null,
+        p.entry?.checkPriceSol ?? null,
+        p.entry?.sentAt ?? p.fill.sentAt ?? null,
+        p.entry?.sentPriceSol ?? p.fill.marketPriceSol ?? null,
+        p.entry?.landedAt ?? p.fill.landedAt ?? null,
+        p.entry?.landedPriceSol ?? p.fill.landedMarketPriceSol ?? null,
+        p.entry?.momentum?.m60 ?? null,
+        p.entry?.momentum?.m30 ?? null,
+        p.entry?.momentum?.m10 ?? null,
+        p.entry?.momentum?.m1 ?? null,
       );
     if (p.fill.marketPriceSol && entryPrice > 0) {
       const dev = (entryPrice / p.fill.marketPriceSol - 1) * 100;
@@ -386,6 +448,33 @@ export class PositionManager {
     }
   }
 
+  /**
+   * Koerspad na instap (1, 3, 5, 10, 20, 30 s) en de tijd dat de koers boven +20% en +50% stond.
+   * De tijd tussen twee waarnemingen telt bij de toestand van de eerste waarneming.
+   */
+  private trackPathAndThresholds(r: PositionRow, price: number, now: number) {
+    const pnlPct = (price / r.entry_price_sol - 1) * 100;
+    const prev = this.lastObs.get(r.id);
+    this.lastObs.set(r.id, { at: now, pnlPct });
+    let add20 = 0;
+    let add50 = 0;
+    if (prev && now > prev.at) {
+      const dt = (now - prev.at) / 1000;
+      if (prev.pnlPct >= 20) add20 = dt;
+      if (prev.pnlPct >= 50) add50 = dt;
+    }
+    const path = updatePath(r.path_json, r.landed_at ?? r.opened_at, price, now);
+    if (path) r.path_json = path;
+    if (!add20 && !add50 && !path && (pnlPct < 20 || r.first_20_at) && (pnlPct < 50 || r.first_50_at)) return;
+    if (pnlPct >= 20 && !r.first_20_at) r.first_20_at = now;
+    if (pnlPct >= 50 && !r.first_50_at) r.first_50_at = now;
+    r.secs_above_20 += add20;
+    r.secs_above_50 += add50;
+    this.db
+      .prepare('UPDATE positions SET path_json = ?, secs_above_20 = ?, secs_above_50 = ?, first_20_at = ?, first_50_at = ? WHERE id = ?')
+      .run(r.path_json, r.secs_above_20, r.secs_above_50, r.first_20_at, r.first_50_at, r.id);
+  }
+
   /** Na de exit: hoogste/laagste prijs en graduation bijhouden (MFE/MAE na exit). */
   private handlePostExit(w: PositionRow, price: number | null, now: number) {
     this.watching.set(w.id, w.mint);
@@ -395,6 +484,8 @@ export class PositionManager {
       logger.info({ id: w.id, symbol: w.symbol, exitReason: w.exit_reason, naExitMin: +((now - (w.closed_at ?? now)) / 60_000).toFixed(1) }, 'token gegradueerd ná onze exit');
     }
     if (price === null) return;
+    const path = updatePath(w.path_json, w.landed_at ?? w.opened_at, price, now);
+    if (path) this.db.prepare('UPDATE positions SET path_json = ? WHERE id = ?').run(path, w.id);
     if (w.post_max_price_sol === null || price > w.post_max_price_sol) {
       this.db.prepare('UPDATE positions SET post_max_price_sol = ?, post_max_at = ? WHERE id = ?').run(price, now, w.id);
     }
@@ -457,7 +548,7 @@ export class PositionManager {
     try {
       const exec = this.executorFor(r.mode);
       if (!exec) throw new Error(`geen ${r.mode} executor beschikbaar (wallet ontbreekt?)`);
-      const fill = await exec.sell({ mint: r.mint, tokenAmountRaw: amount, decimals: r.decimals, slippagePct: s.slippagePct, priorityFeeSol: s.priorityFeeSol });
+      const fill = await exec.sell({ mint: r.mint, tokenAmountRaw: amount, decimals: r.decimals, slippagePct: s.sellSlippagePct, priorityFeeSol: s.priorityFeeSol });
       const sold = fill.tokenAmountRaw > 0n && fill.tokenAmountRaw <= rest ? fill.tokenAmountRaw : amount;
       const soldUi = Number(sold) / 10 ** r.decimals;
       const done = [...(r.partial_done ? r.partial_done.split(',') : []), pe.key].join(',');
@@ -466,9 +557,14 @@ export class PositionManager {
       this.db
         .prepare("UPDATE positions SET status = 'open', tokens_sold_raw = ?, realized_sol = ?, partial_done = ? WHERE id = ?")
         .run(totalSold.toString(), realized, done, id);
+      // Aparte P&L voor dit deel: opbrengst minus het deel van de inleg dat bij deze tokens hoort
+      const costSol = r.entry_sol * (Number(sold) / Number(BigInt(r.token_amount_raw)));
+      const partPnl = fill.solAmount - costSol;
       this.db
-        .prepare('INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, Date.now(), pe.kind, pe.key, sold.toString(), fill.solAmount, soldUi > 0 ? fill.solAmount / soldUi : null, triggerPriceSol, pnlAtTrigger, fill.signature ?? null);
+        .prepare(
+          'INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig, sent_at, cost_sol, pnl_sol, pnl_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(id, fill.landedAt ?? Date.now(), pe.kind, pe.key, sold.toString(), fill.solAmount, soldUi > 0 ? fill.solAmount / soldUi : null, triggerPriceSol, pnlAtTrigger, fill.signature ?? null, fill.sentAt ?? null, costSol, partPnl, costSol > 0 ? (partPnl / costSol) * 100 : null);
       this.partialRetryAt.delete(id);
       logger.info(
         {
@@ -481,6 +577,9 @@ export class PositionManager {
           ontvangenSol: +fill.solAmount.toFixed(5),
           totaalTerugSol: +realized.toFixed(5),
           inlegSol: +r.entry_sol.toFixed(5),
+          prijs: soldUi > 0 ? fill.solAmount / soldUi : null,
+          dezeDeelPnlSol: +partPnl.toFixed(5),
+          dezeDeelPnlPct: costSol > 0 ? +((partPnl / costSol) * 100).toFixed(1) : null,
           restPct: +((Number(rest - sold) / Number(BigInt(r.token_amount_raw))) * 100).toFixed(1),
           via: fill.executor,
           sig: fill.signature,
@@ -520,7 +619,7 @@ export class PositionManager {
         tokenAmountRaw: remainingRaw(r),
         decimals: r.decimals,
         // Bij herhaalde mislukte verkoop: meer slippage toestaan
-        slippagePct: Math.min(50, s.slippagePct + r.sell_attempts * 5),
+        slippagePct: Math.min(50, s.sellSlippagePct + r.sell_attempts * 5),
         priorityFeeSol: s.priorityFeeSol,
       });
       const ui = tokensUi(r);
@@ -542,9 +641,14 @@ export class PositionManager {
             sell_sig = ?, pending_exit = NULL, last_error = NULL, post_watch_until = ?, post_graduated = 0 WHERE id = ?`,
         )
         .run(closedAt, exitSol, fillPrice, reason, pnlSol, pnlPct, fill.signature ?? null, watchMin > 0 ? closedAt + watchMin * 60_000 : null, id);
+      const restCost = r.entry_sol * (Number(remainingRaw(r)) / Number(BigInt(r.token_amount_raw)));
+      const restPnl = fill.solAmount - restCost;
       this.db
-        .prepare('INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, closedAt, reason, null, remainingRaw(r).toString(), fill.solAmount, fillPrice || null, trigger, trigger ? (trigger / r.entry_price_sol - 1) * 100 : null, fill.signature ?? null);
+        .prepare(
+          'INSERT INTO position_sells (position_id, at, kind, level_key, tokens_raw, sol, price_sol, trigger_price_sol, pnl_pct_at_trigger, sig, sent_at, cost_sol, pnl_sol, pnl_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(id, closedAt, reason, 'rest', remainingRaw(r).toString(), fill.solAmount, fillPrice || null, trigger, trigger ? (trigger / r.entry_price_sol - 1) * 100 : null, fill.signature ?? null, fill.sentAt ?? null, restCost, restPnl, restCost > 0 ? (restPnl / restCost) * 100 : null);
+      this.lastObs.delete(id);
       // Token blijft gevolgd zolang het na-exit-venster loopt
       if (watchMin <= 0) this.tracker.pinned.delete(r.mint);
       logger.info(
@@ -562,6 +666,10 @@ export class PositionManager {
           config: r.config_hash,
           deelverkopen: r.partial_done || null,
           uitDeelverkopenSol: r.realized_sol ? +r.realized_sol.toFixed(5) : null,
+          restPnlSol: r.partial_done ? +restPnl.toFixed(5) : undefined,
+          restPnlPct: r.partial_done && restCost > 0 ? +((restPnl / restCost) * 100).toFixed(1) : undefined,
+          secsBoven20: +r.secs_above_20.toFixed(1),
+          secsBoven50: +r.secs_above_50.toFixed(1),
           ...entryFields(r),
           via: fill.executor,
           sig: fill.signature,
@@ -642,7 +750,7 @@ export class PositionManager {
   allForExport(): Record<string, unknown>[] {
     const pct = (a: string, b: string) => `ROUND((${a} / NULLIF(${b}, 0) - 1) * 100, 2)`;
     const local = (c: string) => `strftime('%Y-%m-%d %H:%M:%S', ${c} / 1000, 'unixepoch', 'localtime')`;
-    return this.db
+    const rows = this.db
       .prepare(
         `SELECT id, run_id, config_hash, mode, status, mint, symbol, executor,
           ${local('opened_at')} AS geopend, ${local('closed_at')} AS gesloten,
@@ -666,9 +774,44 @@ export class PositionManager {
           ${pct('post_min_price_sol', 'entry_price_sol')} AS min_na_exit_vs_instap_pct,
           ${pct('post_min_price_sol', 'exit_price_sol')} AS min_na_exit_vs_exit_pct,
           post_graduated AS gegradueerd_na_exit,
+          mom_60s_pct AS momentum_60s_pct, mom_30s_pct AS momentum_30s_pct, mom_10s_pct AS momentum_10s_pct, mom_1s_pct AS momentum_1s_pct,
+          ROUND(secs_above_20, 1) AS sec_boven_20pct, ROUND(secs_above_50, 1) AS sec_boven_50pct,
+          ROUND((first_20_at - opened_at) / 1000.0, 1) AS eerste_20pct_na_s, ROUND((first_50_at - opened_at) / 1000.0, 1) AS eerste_50pct_na_s,
+          ${local('eval_at')} AS evaluatie_tijd, eval_price_sol AS evaluatie_prijs,
+          ${pct('check_price_sol', 'eval_price_sol')} AS check_vs_evaluatie_pct,
+          ${pct('sent_price_sol', 'eval_price_sol')} AS verzending_vs_evaluatie_pct,
+          ${pct('landed_price_sol', 'eval_price_sol')} AS landing_vs_evaluatie_pct,
+          ${pct('entry_price_sol', 'eval_price_sol')} AS fill_vs_evaluatie_pct,
+          (check_at - eval_at) AS evaluatie_naar_check_ms, (sent_at - check_at) AS check_naar_verzending_ms,
+          (landed_at - sent_at) AS verzending_naar_landing_ms, (landed_at - eval_at) AS evaluatie_naar_landing_ms,
+          path_json,
           entry_price_sol, entry_market_price_sol, exit_trigger_price_sol, exit_price_sol,
           peak_price_sol, min_price_sol, post_max_price_sol, post_min_price_sol, buy_sig, sell_sig
         FROM positions ORDER BY opened_at`,
+      )
+      .all() as Record<string, unknown>[];
+    // Koerspad als losse kolommen: % t.o.v. de instapprijs op 1, 3, 5, 10, 20 en 30 s na de fill
+    return rows.map(({ path_json, ...r }) => {
+      const path = path_json ? (JSON.parse(String(path_json)) as Record<string, { p: number }>) : {};
+      const entry = Number(r.entry_price_sol);
+      const out: Record<string, unknown> = { ...r };
+      for (const m of PATH_MARKS) out[`koers_${m}s_pct`] = path[m] && entry ? +((path[m].p / entry - 1) * 100).toFixed(2) : null;
+      return out;
+    });
+  }
+
+  /** Alle (deel)verkopen met hun eigen P&L, voor export. */
+  sellsForExport(): Record<string, unknown>[] {
+    return this.db
+      .prepare(
+        `SELECT s.id, s.position_id, p.symbol, p.mint, p.mode, p.config_hash, p.run_id,
+          strftime('%Y-%m-%d %H:%M:%S', s.at / 1000, 'unixepoch', 'localtime') AS tijd,
+          ROUND((s.at - p.opened_at) / 1000.0, 1) AS na_instap_s, s.kind AS soort, s.level_key AS niveau,
+          ROUND(CAST(s.tokens_raw AS REAL) / CAST(p.token_amount_raw AS REAL) * 100, 1) AS deel_van_positie_pct,
+          s.price_sol AS prijs, s.trigger_price_sol AS trigger_prijs, ROUND(s.pnl_pct_at_trigger, 2) AS winst_bij_trigger_pct,
+          ROUND(s.cost_sol, 6) AS inleg_deel_sol, ROUND(s.sol, 6) AS opbrengst_sol, ROUND(s.pnl_sol, 6) AS pnl_sol, ROUND(s.pnl_pct, 2) AS pnl_pct,
+          (s.at - s.sent_at) AS verzending_naar_landing_ms, s.sig
+        FROM position_sells s JOIN positions p ON p.id = s.position_id ORDER BY s.at`,
       )
       .all() as Record<string, unknown>[];
   }

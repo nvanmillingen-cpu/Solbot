@@ -18,6 +18,8 @@ export class TokenTracker {
   readonly tokens = new Map<string, TrackedToken>();
   /** Mints die niet opgeruimd mogen worden (open posities). */
   readonly pinned = new Set<string>();
+  /** Extra redenen om een token niet op te ruimen (bijv. overgeslagen tokens die nog gevolgd worden). */
+  readonly keepAlive: ((mint: string) => boolean)[] = [];
   private timers: NodeJS.Timeout[] = [];
   readonly rpcFeed: RpcLogFeed;
   private startedAt = Date.now();
@@ -119,6 +121,10 @@ export class TokenTracker {
     if (this.settings().filters.graduated === 'no') return;
     this.tokens.set(e.mint, newTrackedToken({ mint: e.mint, source: 'migration', graduated: true, firstSeenAt: e.receivedAt }));
     this.enforceMax();
+  }
+
+  private isKept(mint: string): boolean {
+    return this.pinned.has(mint) || this.keepAlive.some((f) => f(mint));
   }
 
   /** Markeert een token als gegradueerd en logt dat één keer (curve-poll en migratie-event melden hetzelfde). */
@@ -235,7 +241,7 @@ export class TokenTracker {
     const cutoff = Date.now() - watchWindowMin * 60_000;
     const removed: string[] = [];
     for (const [mint, t] of this.tokens) {
-      if (this.pinned.has(mint)) continue;
+      if (this.isKept(mint)) continue;
       if (t.firstSeenAt < cutoff) {
         this.tokens.delete(mint);
         removed.push(mint);
@@ -251,7 +257,7 @@ export class TokenTracker {
     // Map behoudt invoegvolgorde: oudste eerst
     for (const mint of this.tokens.keys()) {
       if (this.tokens.size <= max) break;
-      if (this.pinned.has(mint)) continue;
+      if (this.isKept(mint)) continue;
       this.tokens.delete(mint);
       removed.push(mint);
     }

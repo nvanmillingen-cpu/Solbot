@@ -68,8 +68,66 @@ CREATE TABLE IF NOT EXISTS positions (
   entry_holders INTEGER,          -- aantal holders (zonder bonding curve); bij RPC max. 19 = ondergrens
   entry_top10_pct REAL,
   entry_creator_pct REAL,
-  entry_rt_loss_pct REAL
+  entry_rt_loss_pct REAL,
+  -- Tijdstempels en prijzen per stap van de aankoop
+  eval_at INTEGER,                 -- evaluatie (filters gehaald)
+  eval_price_sol REAL,
+  check_at INTEGER,                -- veiligheidscheck klaar (verse on-chain curve)
+  check_price_sol REAL,
+  sent_at INTEGER,                 -- transactie verzonden
+  sent_price_sol REAL,
+  landed_at INTEGER,               -- transactie geland (fill)
+  landed_price_sol REAL,           -- marktprijs op het moment van landen
+  -- Koerspad na instap: {"1": prijs, "3": ..., "30": ...} (seconden na de fill)
+  path_json TEXT,
+  -- Tijd boven winstdrempels tijdens het houden
+  secs_above_20 REAL NOT NULL DEFAULT 0,
+  secs_above_50 REAL NOT NULL DEFAULT 0,
+  first_20_at INTEGER,
+  first_50_at INTEGER,
+  mom_60s_pct REAL,                -- momentum vlak vóór aankoop/afwijzing (% over 60/30/10/1 s)
+  mom_30s_pct REAL,
+  mom_10s_pct REAL,
+  mom_1s_pct REAL
 );
+
+-- Tokens die (bijna) gekocht werden maar zijn afgewezen, met de koers daarna (counterfactual)
+CREATE TABLE IF NOT EXISTS skipped_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mint TEXT NOT NULL,
+  symbol TEXT,
+  at INTEGER NOT NULL,
+  stage TEXT NOT NULL,             -- 'filter' (precies één filter niet gehaald) | 'holders' | 'veiligheid' | 'koop'
+  reason_key TEXT NOT NULL,        -- filtersleutel of korte reden
+  reason TEXT NOT NULL,            -- leesbare reden
+  value TEXT,                      -- gemeten waarde van het afwijzende filter
+  required TEXT,                   -- vereiste waarde
+  price_sol REAL,
+  age_min REAL,
+  mcap_usd REAL,
+  vol_total_usd REAL,
+  vol10m_usd REAL,
+  price_change_pct REAL,
+  holders INTEGER,
+  top10_pct REAL,
+  creator_pct REAL,
+  checks_json TEXT,                -- alle filterresultaten op dat moment
+  config_hash TEXT,
+  run_id TEXT,
+  post_watch_until INTEGER,
+  post_max_price_sol REAL,
+  post_max_at INTEGER,
+  post_min_price_sol REAL,
+  post_min_at INTEGER,
+  post_last_price_sol REAL,
+  post_graduated INTEGER NOT NULL DEFAULT 0,
+  mom_60s_pct REAL,                -- momentum vlak vóór aankoop/afwijzing (% over 60/30/10/1 s)
+  mom_30s_pct REAL,
+  mom_10s_pct REAL,
+  mom_1s_pct REAL,
+  UNIQUE (mint, stage, reason_key)
+);
+CREATE INDEX IF NOT EXISTS idx_skipped_watch ON skipped_tokens(post_watch_until);
 
 CREATE TABLE IF NOT EXISTS position_sells (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +140,11 @@ CREATE TABLE IF NOT EXISTS position_sells (
   price_sol REAL,                  -- effectieve verkoopprijs per token
   trigger_price_sol REAL,
   pnl_pct_at_trigger REAL,
-  sig TEXT
+  sig TEXT,
+  sent_at INTEGER,
+  cost_sol REAL,                   -- deel van de inleg dat bij deze tokens hoort
+  pnl_sol REAL,                    -- opbrengst minus dat deel van de inleg
+  pnl_pct REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sells_position ON position_sells(position_id);
 CREATE INDEX IF NOT EXISTS idx_positions_mint ON positions(mint);
@@ -135,9 +197,40 @@ export function openDb(file: string): Db {
     ['entry_top10_pct', 'REAL'],
     ['entry_creator_pct', 'REAL'],
     ['entry_rt_loss_pct', 'REAL'],
+    ['eval_at', 'INTEGER'],
+    ['eval_price_sol', 'REAL'],
+    ['check_at', 'INTEGER'],
+    ['check_price_sol', 'REAL'],
+    ['sent_at', 'INTEGER'],
+    ['sent_price_sol', 'REAL'],
+    ['landed_at', 'INTEGER'],
+    ['landed_price_sol', 'REAL'],
+    ['path_json', 'TEXT'],
+    ['secs_above_20', 'REAL NOT NULL DEFAULT 0'],
+    ['secs_above_50', 'REAL NOT NULL DEFAULT 0'],
+    ['first_20_at', 'INTEGER'],
+    ['first_50_at', 'INTEGER'],
+    ['mom_60s_pct', 'REAL'],
+    ['mom_30s_pct', 'REAL'],
+    ['mom_10s_pct', 'REAL'],
+    ['mom_1s_pct', 'REAL'],
   ];
   for (const [name, type] of added) if (!cols.has(name)) db.exec(`ALTER TABLE positions ADD COLUMN ${name} ${type}`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_positions_watch ON positions(post_watch_until)');
+  const skipCols = new Set((db.prepare('PRAGMA table_info(skipped_tokens)').all() as { name: string }[]).map((c) => c.name));
+  for (const name of ['mom_60s_pct', 'mom_30s_pct', 'mom_10s_pct', 'mom_1s_pct']) if (!skipCols.has(name)) db.exec(`ALTER TABLE skipped_tokens ADD COLUMN ${name} REAL`);
+  const sellCols = new Set((db.prepare('PRAGMA table_info(position_sells)').all() as { name: string }[]).map((c) => c.name));
+  for (const [name, type] of [['sent_at', 'INTEGER'], ['cost_sol', 'REAL'], ['pnl_sol', 'REAL'], ['pnl_pct', 'REAL']] as const) {
+    if (!sellCols.has(name)) db.exec(`ALTER TABLE position_sells ADD COLUMN ${name} ${type}`);
+  }
+  // Trades van vóór de config-hash: markeren als "legacy" (de instellingen van toen zijn niet bewaard)
+  db.exec(`UPDATE positions SET run_id = 'legacy_' || strftime('%Y-%m-%d', opened_at / 1000, 'unixepoch', 'localtime') WHERE run_id IS NULL`);
+  db.exec("UPDATE positions SET config_hash = 'legacy' WHERE config_hash IS NULL");
+  db.prepare('INSERT OR IGNORE INTO settings_versions (hash, json, first_used_at) VALUES (?, ?, ?)').run(
+    'legacy',
+    JSON.stringify({ opmerking: 'Trades van vóór de invoering van de config-hash; de instellingen van toen zijn niet bewaard.' }),
+    0,
+  );
   return db;
 }
 

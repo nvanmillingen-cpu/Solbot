@@ -14,7 +14,8 @@ import { lastPrice } from './core/metrics.js';
 import { solUsd } from './market/solPrice.js';
 import { fetchCurves } from './market/bondingCurve.js';
 import { probeTop10Support } from './core/safety.js';
-import { SettingsStore } from './settings.js';
+import { SkipLog } from './core/skipped.js';
+import { diffSettings, SettingsStore } from './settings.js';
 import { setKeepAwake } from './util/keepAwake.js';
 import { loadWallet } from './wallet.js';
 
@@ -73,18 +74,23 @@ async function main() {
   const executorFor = (mode: 'paper' | 'live') => (mode === 'paper' ? paper : live);
 
   const positions = new PositionManager(db, conn, tracker, () => store.get(), executorFor);
-  const bot = new Bot(db, conn, store, tracker, positions, wallet, executorFor);
+  const skipLog = new SkipLog(db, tracker, () => store.get().tracker.postExitWatchMin, () => store.hash());
+  const bot = new Bot(db, conn, store, tracker, positions, wallet, executorFor, skipLog);
 
   // Instellingen gelden direct: timers met nieuwe intervallen herstarten
   let lastHash = store.hash();
+  let lastSettings = store.get();
   store.onChange((s) => {
     tracker.restart();
     positions.start();
     setKeepAwake(s.general.preventSleep);
     const h = store.hash();
+    const prevSettings = lastSettings;
+    lastSettings = s;
     if (h !== lastHash) {
       // Experimenthygiëne: trades vóór en na deze wijziging niet zomaar vergelijken
-      logger.warn({ van: lastHash, naar: h, botActief: bot.running }, 'instellingen gewijzigd: nieuwe config-hash');
+      // Precies loggen wat er veranderde, zodat hashes later te vergelijken zijn
+      logger.warn({ van: lastHash, naar: h, botActief: bot.running, wijzigingen: diffSettings(prevSettings, s) }, 'instellingen gewijzigd: nieuwe config-hash');
       lastHash = h;
     }
   });
@@ -96,8 +102,9 @@ async function main() {
   feed.start();
   tracker.start();
   positions.start();
+  skipLog.start();
   bot.startLoop();
-  await startServer({ bot, store, positions, tracker, feed, wallet });
+  await startServer({ bot, store, positions, tracker, feed, wallet, skipLog });
 
   const shutdown = (sig: string, code = 0) => {
     logger.info({ sig }, 'afsluiten');
@@ -110,6 +117,7 @@ async function main() {
     feed.stop();
     tracker.stop();
     positions.stop();
+    skipLog.stop();
     bot.stopLoop();
     db.close();
     setTimeout(() => process.exit(code), 300);

@@ -18,6 +18,9 @@ export interface SafetyResult {
   top10Pct?: number | null;
   /** Aantal holders met saldo (zonder bonding curve/pool). Uit max. 20 grootste accounts, dus een ondergrens bij ≥ 19. */
   holders?: number | null;
+  /** Verse on-chain curveprijs uit stap 1 van de check, en het moment waarop die gelezen werd. */
+  checkPriceSol?: number | null;
+  checkAt?: number;
 }
 
 /** Token-2022 extensies waarmee de maker transfers kan blokkeren of tokens kan afpakken. */
@@ -253,13 +256,14 @@ export function checkMintAuthorities(mi: MintInfo): { ok: boolean; reasons: stri
 export async function roundTripLoss(
   mint: string,
   solAmount: number,
-  slippagePct: number,
+  buySlippagePct: number,
   curve?: CurveState,
+  sellSlippagePct = buySlippagePct,
 ): Promise<{ lossPct: number; quotePriceSol: number | null }> {
   const lamports = BigInt(Math.round(solAmount * 1e9));
   try {
-    const buy = await jupQuote(SOL_MINT, mint, lamports, slippagePct);
-    const sell = await jupQuote(mint, SOL_MINT, BigInt(buy.outAmount), slippagePct);
+    const buy = await jupQuote(SOL_MINT, mint, lamports, buySlippagePct);
+    const sell = await jupQuote(mint, SOL_MINT, BigInt(buy.outAmount), sellSlippagePct);
     // Effectieve koopprijs volgens de quote (SOL per heel token, 6 decimals)
     const quotePriceSol = solAmount / (Number(buy.outAmount) / 1e6);
     return { lossPct: (1 - Number(sell.outAmount) / Number(lamports)) * 100, quotePriceSol };
@@ -304,6 +308,7 @@ export async function preBuyChecks(
   }
   if (s.filters.excludeMayhem && fresh?.mayhem) return { ok: false, reasons: ['mayhem mode'], permanent: true };
   const freshPrice = onCurve && fresh ? curvePriceSol(fresh) : null;
+  const checkAt = Date.now();
   if (freshPrice && m.priceSol) {
     const move = (freshPrice / m.priceSol - 1) * 100;
     if (Math.abs(move) > safety.maxPriceMoveBeforeBuyPct) {
@@ -363,7 +368,7 @@ export async function preBuyChecks(
   let roundTripLossPct: number | undefined;
   if (safety.sellQuoteCheck) {
     try {
-      const rt = await roundTripLoss(m.mint, solAmount, s.general.slippagePct, onCurve ? fresh : undefined);
+      const rt = await roundTripLoss(m.mint, solAmount, s.general.buySlippagePct, onCurve ? fresh : undefined, s.general.sellSlippagePct);
       roundTripLossPct = rt.lossPct;
       // Quote moet passen bij de echte on-chain prijs (anders is de fill onbetrouwbaar)
       if (rt.quotePriceSol && freshPrice) {
@@ -378,5 +383,5 @@ export async function preBuyChecks(
     }
   }
 
-  return { ok: reasons.length === 0, reasons, permanent: false, roundTripLossPct, creatorPct, top10Pct, holders };
+  return { ok: reasons.length === 0, reasons, permanent: false, roundTripLossPct, creatorPct, top10Pct, holders, checkPriceSol: freshPrice, checkAt };
 }

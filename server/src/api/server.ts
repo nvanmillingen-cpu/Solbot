@@ -15,6 +15,7 @@ import { logFile, logger, recentLogs, resetLogs, runId, runStartedAt, stamp } fr
 import { solUsdCached } from '../market/solPrice.js';
 import { top10Status } from '../core/safety.js';
 import type { SettingsStore } from '../settings.js';
+import type { SkipLog } from '../core/skipped.js';
 import type { Wallet } from '../wallet.js';
 
 interface Deps {
@@ -24,6 +25,26 @@ interface Deps {
   tracker: TokenTracker;
   feed: PumpPortalFeed;
   wallet: Wallet | null;
+  skipLog?: SkipLog;
+}
+
+/** Rijen als CSV voor Excel (UTF-8 met BOM, komma's). */
+function toCsv(rows: Record<string, unknown>[]): string {
+  const cols = rows.length ? Object.keys(rows[0]) : ['leeg'];
+  const esc = (v: unknown) => {
+    if (v === null || v === undefined) return '';
+    const t = String(v);
+    return /[",;\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  return '\ufeff' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n');
+}
+
+/** {a: {b: 1}} → {"a.b": 1}; arrays als JSON. */
+function flatten(o: unknown, prefix = '', out: Record<string, unknown> = {}): Record<string, unknown> {
+  if (o && typeof o === 'object' && !Array.isArray(o)) {
+    for (const [k, v] of Object.entries(o)) flatten(v, prefix ? `${prefix}.${k}` : k, out);
+  } else out[prefix] = Array.isArray(o) ? JSON.stringify(o) : o;
+  return out;
 }
 
 export async function startServer(d: Deps) {
@@ -157,20 +178,20 @@ export async function startServer(d: Deps) {
   });
 
   /** Alle trades (ook gearchiveerd) als CSV, voor analyse in Excel: MFE/MAE, config-hash en run-id per trade. */
-  app.get('/api/trades.csv', async (_req, reply) => {
-    const rows = d.positions.allForExport();
-    const cols = rows.length ? Object.keys(rows[0]) : ['id'];
-    const esc = (v: unknown) => {
-      if (v === null || v === undefined) return '';
-      const t = String(v);
-      return /[",;\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
-    };
-    const csv = [cols.join(','), ...rows.map((r) => cols.map((c) => esc((r as Record<string, unknown>)[c])).join(','))].join('\r\n');
-    return reply
-      .header('content-type', 'text/csv; charset=utf-8')
-      .header('content-disposition', `attachment; filename="solbot-trades_${stamp()}.csv"`)
-      .send('﻿' + csv); // BOM: Excel herkent dan UTF-8
-  });
+  const csv = (name: string, rows: () => Record<string, unknown>[]) =>
+    app.get(`/api/${name}.csv`, async (_req, reply) =>
+      reply
+        .header('content-type', 'text/csv; charset=utf-8')
+        .header('content-disposition', `attachment; filename="solbot-${name}_${stamp()}.csv"`)
+        .send(toCsv(rows())),
+    );
+  csv('trades', () => d.positions.allForExport());
+  /** Elke (deel)verkoop apart, met eigen tijdstip, prijs en P&L. */
+  csv('verkopen', () => d.positions.sellsForExport());
+  /** Overgeslagen tokens met afwijsreden, waarden en de koers daarna (counterfactual). */
+  csv('overgeslagen', () => d.skipLog?.forExport() ?? []);
+  /** Volledige instellingen per config-hash, één kolom per instelling. */
+  csv('instellingen', () => d.store.versions().map((v) => ({ config_hash: v.hash, eerst_gebruikt: v.first_used_at ? stamp(new Date(v.first_used_at)) : '', ...flatten(v.settings) })));
 
   /** Alle opgeslagen instellingenversies (config-hash → instellingen). */
   app.get('/api/settings/versions', async () => d.store.versions());

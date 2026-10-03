@@ -208,6 +208,18 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
           </Toggle>
           <Toggle
             ctx={ctx}
+            path={['filters', 'momentum']}
+            label="Momentum"
+            hint="Gemeten vlak vóór verzending op de verse on-chain prijs. Kopen alleen als elk venster bóven zijn minimum ligt (standaard > 0%: de koers stijgt over 60, 30, 10 én 1 s). Daalt een kort venster terwijl de lange stijgen, dan is er al een reversal: niet kopen. Ook niet kopen boven het maximum over 60 s. Wordt altijd gelogd, ook als het filter uit staat."
+          >
+            <Num ctx={ctx} path={['filters', 'momentum', 'min60sPct']} label="60 s: minimaal" unit="%" min={-100} />
+            <Num ctx={ctx} path={['filters', 'momentum', 'min30sPct']} label="30 s: minimaal" unit="%" min={-100} />
+            <Num ctx={ctx} path={['filters', 'momentum', 'min10sPct']} label="10 s: minimaal" unit="%" min={-100} />
+            <Num ctx={ctx} path={['filters', 'momentum', 'min1sPct']} label="1 s: minimaal" unit="%" min={-100} />
+            <Num ctx={ctx} path={['filters', 'momentum', 'max60sPct']} label="60 s: maximaal (0 = geen)" unit="%" />
+          </Toggle>
+          <Toggle
+            ctx={ctx}
             path={['filters', 'minHolders']}
             label="Minimaal aantal holders"
             hint="Exact aantal holders (unieke wallets met saldo, zonder bonding curve) via de RPC (getProgramAccounts). Vereist een eigen RPC zoals Helius; de publieke RPC weigert dit, dan wordt alleen een ondergrens (max. 19) gevonden."
@@ -292,7 +304,8 @@ export function SettingsPanel({ onError }: { onError: (e: string | null) => void
                 ['pumpportal', 'PumpPortal (0,5% fee), fallback Jupiter'],
               ]}
             />
-            <Num ctx={ctx} path={['general', 'slippagePct']} label="Slippage" unit="%" />
+            <Num ctx={ctx} path={['general', 'buySlippagePct']} label="Slippage aankoop" unit="%" />
+            <Num ctx={ctx} path={['general', 'sellSlippagePct']} label="Slippage verkoop" unit="%" hint="Bij een mislukte verkoop komt er per nieuwe poging 5% bij (max. 50%)." />
             <Num ctx={ctx} path={['general', 'priorityFeeSol']} label="Priority fee (max)" unit="SOL" />
             <Num ctx={ctx} path={['general', 'maxTxRetries']} label="Max. herhalingen bij mislukte tx" step="1" />
             <Check

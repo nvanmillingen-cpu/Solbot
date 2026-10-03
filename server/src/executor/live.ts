@@ -108,9 +108,10 @@ export class LiveExecutor implements Executor {
         }
       }
       try {
+        const sentAt = Date.now();
         const { out, via } = await this.attempt('buy', r);
         if (out.tokenDeltaRaw <= 0n) throw new Error(`koop bevestigd maar geen tokens ontvangen (${out.signature})`);
-        return { signature: out.signature, solAmount: -out.solDelta, tokenAmountRaw: out.tokenDeltaRaw, decimals: out.decimals, executor: via };
+        return { signature: out.signature, solAmount: -out.solDelta, tokenAmountRaw: out.tokenDeltaRaw, decimals: out.decimals, executor: via, sentAt, landedAt: Date.now() };
       } catch (e) {
         lastErr = e;
       }
@@ -137,8 +138,9 @@ export class LiveExecutor implements Executor {
       const slippagePct = Math.min(50, r.slippagePct + i * 5);
       if (i > 0) await sleep(1500 * i);
       try {
+        const sentAt = Date.now();
         const { out, via } = await this.attempt('sell', { ...r, tokenAmountRaw: amount, decimals: bal.decimals, slippagePct });
-        return { signature: out.signature, solAmount: out.solDelta, tokenAmountRaw: -out.tokenDeltaRaw, decimals: out.decimals, executor: via };
+        return { signature: out.signature, solAmount: out.solDelta, tokenAmountRaw: -out.tokenDeltaRaw, decimals: out.decimals, executor: via, sentAt, landedAt: Date.now() };
       } catch (e) {
         lastErr = e;
       }
